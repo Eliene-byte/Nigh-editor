@@ -121,7 +121,8 @@ bool putText(const std::wstring& path,const std::string& text) {
 }
 
 // Little-endian project format. Only the edits and paths to original footage are stored.
-static const char Signature[8]={'N','I','G','H','E','D','1','\n'};
+static const char Legacy[8]={'N','I','G','H','E','D','1','\n'};
+static const char Signature[8]={'N','I','G','H','E','D','2','\n'};
 static bool putInt(File& f,int n) { uint32_t u=n; return f.put(&u,4); }
 static bool getInt(File& f,int& n) {
     uint32_t u;
@@ -131,7 +132,8 @@ static bool getInt(File& f,int& n) {
 }
 static bool putString(File& f,const std::wstring& s) {
     const std::string raw=utf8(s);
-    return putInt(f,int(raw.size())) && f.put(raw.data(),DWORD(raw.size()));
+    return !raw.empty() && raw.size()<=MAX_PATH*4u && raw.find('\0')==std::string::npos &&
+        putInt(f,int(raw.size())) && f.put(raw.data(),DWORD(raw.size()));
 }
 static bool getString(File& f,std::wstring& s) {
     int n;
@@ -141,20 +143,37 @@ static bool getString(File& f,std::wstring& s) {
     s=wide(text);
     return !s.empty() && s.size()<MAX_PATH;
 }
+static bool putEffects(File& f,const Effects& e) {
+    int fields[]={e.scale,e.x+100,e.y+100,e.opacity,e.brightness+60,e.contrast,e.saturation,e.dissolve,e.pan+100,e.fadeIn,e.fadeOut};
+    for(int n:fields) if(!putInt(f,n)) return false;
+    return true;
+}
+static bool getEffects(File& f,Effects& e) {
+    int* fields[]={&e.scale,&e.x,&e.y,&e.opacity,&e.brightness,&e.contrast,&e.saturation,&e.dissolve,&e.pan,&e.fadeIn,&e.fadeOut};
+    for(int* field:fields) if(!getInt(f,*field)) return false;
+    e.x-=100; e.y-=100; e.brightness-=60; e.pan-=100;
+    return true;
+}
 static bool putProject(File& f,const std::wstring& base,const Project& p) {
     if(!f.put(Signature,8) || !putInt(f,int(p.assets.size()))) return false;
     for(const Asset& a:p.assets) {
         bool rel=a.path.size()>base.size() && equalPath(a.path.substr(0,base.size()),base);
         if(!putInt(f,rel?1:0) || !putString(f,rel?a.path.substr(base.size()):a.path)) return false;
     }
-    if(!putInt(f,int(p.seq.muteA1)+2*int(p.seq.muteA2))) return false;
-    for(int l=0;l<2;++l) {
-        const auto& clips=laneOf(p.seq,Lane(l));
+    const Sequence& s=p.seq;
+    if(!putInt(f,int(s.muteA1)+2*int(s.muteA2)+4*int(s.muteA3)+8*int(s.hideV2))) return false;
+    for(int l=0;l<LaneCount;++l) {
+        const auto& clips=laneOf(s,Lane(l));
         if(!putInt(f,int(clips.size()))) return false;
         for(const Clip& c:clips) {
-            if(!putInt(f,c.asset) || !putInt(f,c.in) || !putInt(f,c.len) || !putInt(f,c.pos) || !putInt(f,c.gain)) return false;
+            if(!putInt(f,l==Titles?0:c.asset) || !putInt(f,c.in) || !putInt(f,c.len) || !putInt(f,c.pos) ||
+                !putInt(f,c.gain) || !putEffects(f,c.fx)) return false;
+            if(l==Titles && (!putString(f,c.title.text) || !putInt(f,c.title.position) || !putInt(f,c.title.size) ||
+                !putInt(f,c.title.color) || !putInt(f,c.title.box?1:0))) return false;
         }
     }
+    if(!putInt(f,s.workIn+1) || !putInt(f,s.workOut+1) || !putInt(f,int(s.markers.size()))) return false;
+    for(const Marker& m:s.markers) if(!putInt(f,m.frame) || !putString(f,m.text)) return false;
     return f.flush();
 }
 bool saveProject(const Project& p,const std::wstring& target) {
@@ -170,7 +189,9 @@ bool saveProject(const Project& p,const std::wstring& target) {
 static bool getProject(File& f,const std::wstring& base,Project& p) {
     char magic[8];
     int n;
-    if(f.size()>1024*1024 || !f.get(magic,8) || std::memcmp(magic,Signature,8) || !getInt(f,n) || n>MaxAssets) return false;
+    if(f.size()>1024*1024 || !f.get(magic,8) || !getInt(f,n) || n>MaxAssets) return false;
+    bool old=std::memcmp(magic,Legacy,8)==0;
+    if(!old && std::memcmp(magic,Signature,8)) return false;
     for(int i=0;i<n;++i) {
         Asset a;
         int rel;
@@ -181,17 +202,35 @@ static bool getProject(File& f,const std::wstring& base,Project& p) {
         a.name=baseName(a.path);
         p.assets.push_back(a);
     }
-    if(!getInt(f,n) || n>3) return false;
-    p.seq.muteA1=(n&1)!=0;
-    p.seq.muteA2=(n&2)!=0;
-    for(int l=0;l<2;++l) {
+    if(!getInt(f,n) || n>(old?3:15)) return false;
+    p.seq.muteA1=(n&1)!=0; p.seq.muteA2=(n&2)!=0; p.seq.muteA3=(n&4)!=0; p.seq.hideV2=(n&8)!=0;
+    for(int l=0;l<(old?2:int(LaneCount));++l) {
         if(!getInt(f,n) || n>MaxClips) return false;
         auto& lane=laneOf(p.seq,Lane(l));
         for(int i=0;i<n;++i) {
             Clip c;
-            if(!getInt(f,c.asset) || !getInt(f,c.in) || !getInt(f,c.len) || !getInt(f,c.pos) || !getInt(f,c.gain)) return false;
-            lane.push_back(c);
+            if(!getInt(f,c.asset) || !getInt(f,c.in) || !getInt(f,c.len) || !getInt(f,c.pos) || !getInt(f,c.gain) ||
+                (!old && !getEffects(f,c.fx))) return false;
+            if(l==Titles) {
+                int box;
+                if(c.asset!=0 || !getString(f,c.title.text) || !getInt(f,c.title.position) || !getInt(f,c.title.size) ||
+                    !getInt(f,c.title.color) || !getInt(f,box) || box>1) return false;
+                c.asset=-1; c.title.box=box!=0;
+            }
+            lane.push_back(std::move(c));
         }
+    }
+    if(!old) {
+        if(!getInt(f,p.seq.workIn) || !getInt(f,p.seq.workOut) || !getInt(f,n) || n>MaxMarkers) return false;
+        --p.seq.workIn; --p.seq.workOut;
+        for(int i=0;i<n;++i) {
+            int t;
+            std::wstring text;
+            if(!getInt(f,t) || !getString(f,text)) return false;
+            p.seq.markers.push_back(Marker(t,text));
+        }
+        char end;
+        if(f.read(&end,1)) return false;
     }
     return valid(p,false);
 }

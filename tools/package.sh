@@ -51,7 +51,7 @@ import pathlib, sys
 text = pathlib.Path('tools/LEIA-ME.txt').read_text(encoding='utf-8')
 pathlib.Path(sys.argv[1]).write_bytes(('\ufeff'+text.replace('\n','\r\n')).encode('utf-8'))
 PY
-bundle='Nigh-Editor-0.1.0-Windows-x86.zip'
+bundle='Nigh-Editor-0.2.0-Windows-x86.zip'
 (cd "$stage" && zip -q -9 -r "$stage/$bundle" "$name")
 mv -f -- "$stage/$bundle" "$artifact_dir/$bundle"
 (cd "$artifact_dir" && sha256sum "$bundle" > "$bundle.sha256")

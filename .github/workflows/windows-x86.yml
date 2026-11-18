@@ -71,7 +71,9 @@ jobs:
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: teste-win32
-          path: build/smoke.exe
+          path: |
+            build/smoke.exe
+            build/gui-smoke.exe
           if-no-files-found: error
           retention-days: 14
           overwrite: true
@@ -92,7 +94,7 @@ jobs:
           name: teste-win32
           path: teste
 
-      - name: Importar, editar, salvar e exportar MP4 usando o pacote
+      - name: Testar edição, composição, formato legado e exportações
         shell: pwsh
         env:
           PACKAGE_FILENAME: ${{ needs.build.outputs.filename }}
@@ -110,8 +112,9 @@ jobs:
 
           $probe = Join-Path $portable 'ffprobe.exe'
           $specs = @(
-            @{ File = 'Vídeo exportado.mp4'; Width = 640; Height = 360 },
-            @{ File = 'Vídeo 480p.mp4'; Width = 854; Height = 480 }
+            @{ File = 'Vídeo exportado.mp4'; Width = 640; Height = 360; Frames = 284 },
+            @{ File = 'Vídeo 480p.mp4'; Width = 854; Height = 480; Frames = 284 },
+            @{ File = 'Composição HD.mp4'; Width = 1280; Height = 720; Frames = 24 }
           )
           foreach ($spec in $specs) {
             $json = & $probe -v error -show_entries stream=codec_name,width,height,r_frame_rate,nb_frames,channels -of json -i (Join-Path $dest $spec.File)
@@ -120,11 +123,45 @@ jobs:
             $video = $streams | Where-Object codec_name -eq 'h264'
             $audio = $streams | Where-Object codec_name -eq 'aac'
             if ($video.width -ne $spec.Width -or $video.height -ne $spec.Height -or
-                $video.r_frame_rate -ne '24/1' -or $video.nb_frames -ne '284' -or $audio.channels -ne 2) {
+                $video.r_frame_rate -ne '24/1' -or $video.nb_frames -ne [string]$spec.Frames -or $audio.channels -ne 2) {
               throw "Exportação inesperada: $($spec.File)"
             }
             Write-Host "Validado: $($spec.File) — $($video.width)x$($video.height), H.264 + AAC estéreo"
           }
+
+          $wav = & $probe -v error -show_entries stream=codec_name,channels,sample_rate,duration_ts -of json -i (Join-Path $dest 'Mix estéreo.wav')
+          if ($LASTEXITCODE -ne 0) { throw 'ffprobe falhou para o WAV' }
+          $pcm = ($wav -join "`n" | ConvertFrom-Json).streams[0]
+          if ($pcm.codec_name -ne 'pcm_s16le' -or $pcm.channels -ne 2 -or $pcm.sample_rate -ne '48000' -or $pcm.duration_ts -ne 48000) {
+            throw 'O WAV não contém 1 segundo de PCM estéreo de 48 kHz'
+          }
+
+      - name: Abrir o editor e testar propriedades, títulos e recuperação
+        shell: pwsh
+        run: |
+          $portable = (Resolve-Path 'extraido/Nigh Editor').Path
+          $dest = (Resolve-Path 'saida').Path
+          $bmp = Join-Path $dest 'Nigh Editor 0.2.bmp'
+          $png = Join-Path $dest 'Interface-Nigh-Editor.png'
+          & './teste/gui-smoke.exe' (Join-Path $portable 'NighEditor.exe') $bmp `
+            (Join-Path $dest 'Recuperação GUI.nigh') (Join-Path $portable 'demo/Dunas.mp4')
+          if ($LASTEXITCODE -ne 0) { throw "Falha no teste da interface: $LASTEXITCODE" }
+          if (Test-Path -LiteralPath $bmp) {
+            try {
+              Add-Type -AssemblyName System.Drawing
+              $frame = [System.Drawing.Image]::FromFile($bmp)
+              try { $frame.Save($png, [System.Drawing.Imaging.ImageFormat]::Png) } finally { $frame.Dispose() }
+            } catch { Write-Warning "Não foi possível converter a captura: $_" }
+          }
+
+      - name: Guardar captura da demonstração
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: interface-nigh-editor
+          path: saida/Interface-Nigh-Editor.png
+          if-no-files-found: ignore
+          retention-days: 14
+          overwrite: true
 
   release:
     name: Publicar em GitHub Releases

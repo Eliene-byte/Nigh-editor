@@ -19,8 +19,8 @@ void Player::stop() {
 bool Player::feed(Slot& s) {
     int count=std::min(BufSamples+0,end_-sent_);
     if(count<=0) return true;
-    mixer_.fill(sent_,count,PreviewRate,1,s.data);
-    s.header.dwBufferLength=count*2;
+    mixer_.fill(sent_,count,PreviewRate,2,s.data);
+    s.header.dwBufferLength=count*4;
     s.header.dwFlags&=~WHDR_DONE;
     if(waveOutWrite(wave_,&s.header,sizeof(s.header))!=MMSYSERR_NOERROR) return false;
     sent_+=count;
@@ -36,7 +36,7 @@ bool Player::start(std::vector<Sound> sounds,int length,int frame) {
     playing_=true;
     if(sounds.empty()) return true;
     mixer_.set(std::move(sounds));
-    WAVEFORMATEX fmt={WAVE_FORMAT_PCM,1,PreviewRate,PreviewRate*2,2,16,0};
+    WAVEFORMATEX fmt={WAVE_FORMAT_PCM,2,PreviewRate,PreviewRate*4,4,16,0};
     if(waveOutOpen(&wave_,WAVE_MAPPER,&fmt,0,0,CALLBACK_NULL)!=MMSYSERR_NOERROR) { wave_=0; return true; }
     std::memset(slots_,0,sizeof(slots_));
     waveOutPause(wave_);
@@ -58,7 +58,7 @@ int Player::tick() {
         mm.wType=TIME_SAMPLES;
         if(waveOutGetPosition(wave_,&mm,sizeof(mm))==MMSYSERR_NOERROR) {
             if(mm.wType==TIME_SAMPLES) pos=start_+int(mm.u.sample);
-            else if(mm.wType==TIME_BYTES) pos=start_+int(mm.u.cb/2);
+            else if(mm.wType==TIME_BYTES) pos=start_+int(mm.u.cb/4);
             else if(mm.wType==TIME_MS) pos=start_+int(uint64_t(mm.u.ms)*PreviewRate/1000);
             else pos=-1;
             if(pos>=0) pos=std::min(sent_,pos);

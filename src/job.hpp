@@ -21,7 +21,7 @@ public:
     std::wstring target,error;
     Project project;
     RenderPreset preset;
-    bool success;
+    bool success, openedWithChanges;
     int rejected;
     Job(JobKind k,const std::wstring& tools,const std::wstring& scratch);
     ~Job();

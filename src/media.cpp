@@ -1,15 +1,17 @@
-#include "media.hpp"
+#include "comp.hpp"
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
 
 #define STBI_ONLY_JPEG
+#define STBI_ONLY_PNG
+#define STBI_ONLY_BMP
 #define STBI_NO_STDIO
 #define STBI_NO_THREAD_LOCALS
 #define STBI_NO_SIMD
 #define STBI_NO_LINEAR
 #define STBI_NO_FAILURE_STRINGS
-#define STBI_MAX_DIMENSIONS 512
+#define STBI_MAX_DIMENSIONS 4096
 #define STB_IMAGE_IMPLEMENTATION
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wunused-value"
@@ -77,7 +79,7 @@ static bool run(const MediaContext& ctx,const wchar_t* tool,const Args& args,con
     return false;
 }
 static Args ff() {
-    return {L"-hide_banner",L"-v",L"error",L"-nostdin",L"-y",L"-max_alloc",L"67108864",L"-filter_threads",L"1"};
+    return {L"-hide_banner",L"-v",L"error",L"-nostdin",L"-y",L"-max_alloc",L"67108864",L"-filter_threads",L"1",L"-filter_complex_threads",L"1"};
 }
 static void append(Args& args,std::initializer_list<std::wstring> more) { args.insert(args.end(),more.begin(),more.end()); }
 static std::wstring stream(int index) { return L"0:"+number(index); }
@@ -122,12 +124,13 @@ static bool inspect(const MediaContext& ctx,Asset& a,const std::wstring& log,std
     a.frames=std::max(1,std::min(MaxFrames,int(std::floor(duration*Fps+.5))));
     return true;
 }
-static std::wstring fitFilter(int w,int h,int fps) {
+static std::wstring fitFilter(int w,int h,int fps,bool alpha=false) {
     std::wstring x=number(w), y=number(h), r=x+L"/"+y;
     // Use display rather than pixel aspect ratio (e.g. DV). The bit-exact scaler
     // also avoids legacy x86 MMX range-conversion artifacts on YUV/JPEG previews.
     return L"fps="+number(fps)+L",scale=w='if(gte(dar,"+r+L"),"+x+L",max(2,trunc("+y+L"*dar/2)*2))'"
-        L":h='if(gte(dar,"+r+L"),max(2,trunc("+x+L"/dar/2)*2),"+y+L")':flags=bilinear+accurate_rnd+bitexact,setsar=1,pad="+x+L":"+y+L":(ow-iw)/2:(oh-ih)/2";
+        L":h='if(gte(dar,"+r+L"),max(2,trunc("+x+L"/dar/2)*2),"+y+L")':flags=bilinear+accurate_rnd+bitexact,setsar=1,"+
+        (alpha?L"format=rgba,":L"")+L"pad="+x+L":"+y+L":(ow-iw)/2:(oh-ih)/2"+(alpha?L":color=black@0":L"");
 }
 static uint32_t le32(const unsigned char* bytes) {
     return uint32_t(bytes[0])|(uint32_t(bytes[1])<<8)|(uint32_t(bytes[2])<<16)|(uint32_t(bytes[3])<<24);
@@ -171,16 +174,19 @@ bool FrameReader::frame(const Proxy& p,int i,std::vector<uint8_t>& pixels) {
 static void thumb(Proxy& p) {
     std::vector<uint8_t> pixels;
     FrameReader reader;
-    if(!reader.frame(p,0,pixels)) return;
+    if(!p.still.empty()) pixels=p.still;
+    else if(!reader.frame(p,0,pixels)) return;
     p.thumb.resize(88*50*4);
     for(int y=0;y<50;++y) for(int x=0;x<88;++x) {
         size_t src=(y*ProxyH/50*ProxyW+x*ProxyW/88)*4;
-        std::memcpy(&p.thumb[(y*88+x)*4],&pixels[src],4);
+        uint8_t* to=&p.thumb[(y*88+x)*4];
+        for(int k=0;k<3;++k) to[k]=uint8_t(int(pixels[src+k])*pixels[src+3]/255);
+        to[3]=255;
     }
 }
 static bool peaks(const MediaContext& ctx,Proxy& p) {
     File pcm(p.pcm);
-    const int bin=PreviewRate/4;
+    const int bin=PreviewRate*2/4;
     std::vector<int16_t> samples(bin);
     while(!ctx.stopped() && p.peaks.size()<size_t(MaxFrames/(Fps/4)+1)) {
         DWORD n=pcm.read(samples.data(),DWORD(bin*2));
@@ -200,6 +206,54 @@ static void pcmOutput(Args& a,int index,int frames,int rate,int channels,const s
     append(a,{L"-map",stream(index),L"-vn",L"-af",L"aresample=async=1:first_pts=0,apad",L"-t",seconds(frames),
         L"-ac",number(channels),L"-ar",number(rate),L"-c:a",L"pcm_s16le",L"-f",L"s16le",dest});
 }
+static bool pictureFile(const std::wstring& path) {
+    size_t dot=path.find_last_of(L'.');
+    if(dot==std::wstring::npos) return false;
+    std::wstring ext=path.substr(dot);
+    return equalPath(ext,L".png") || equalPath(ext,L".jpg") || equalPath(ext,L".jpeg") || equalPath(ext,L".bmp");
+}
+struct StillInput {
+    std::wstring path;
+    int width,height;
+    StillInput() : width(0),height(0) {}
+};
+static bool decodeStill(const std::wstring& path,StillInput& dst,std::wstring& error) {
+    File file(path);
+    uint64_t size=file.size();
+    if(size==0 || size>32*1024*1024) { error=L"Imagem vazia ou acima de 32 MB."; return false; }
+    std::vector<uint8_t> bytes(size_t(size),0);
+    if(!file.get(bytes.data(),DWORD(size))) { error=L"Não foi possível ler a imagem."; return false; }
+    int w=0,h=0,ch=0;
+    std::unique_ptr<uint8_t,void(*)(void*)> raw(stbi_load_from_memory(bytes.data(),int(size),&w,&h,&ch,4),stbi_image_free);
+    if(!raw || w<1 || h<1 || w>4096 || h>4096) { error=L"Imagem inválida ou acima de 4096 × 4096."; return false; }
+    File out(dst.path,true);
+    if(!out.put(raw.get(),DWORD(w*h*4))) { error=L"Não há espaço para preparar a imagem."; return false; }
+    dst.width=w; dst.height=h;
+    return true;
+}
+static void rawInput(Args& args,const std::wstring& path,const wchar_t* format,int w,int h,int fps) {
+    append(args,{L"-f",L"rawvideo",L"-pixel_format",format,L"-video_size",number(w)+L"x"+number(h),
+        L"-framerate",number(fps),L"-threads",L"1",L"-i",path});
+}
+static bool importStill(const MediaContext& ctx,Asset& a,const std::wstring& temp,const std::wstring& log,std::wstring& error) {
+    StillInput source;
+    source.path=join(temp,L"still.rgba");
+    if(!decodeStill(a.path,source,error) || ctx.stopped()) return false;
+    a.still=true; a.video=0; a.frames=5*Fps;
+    a.proxy=std::make_shared<Proxy>();
+    std::wstring path=join(temp,L"proxy.bgra");
+    Args args=ff();
+    rawInput(args,source.path,L"rgba",source.width,source.height,ProxyFps);
+    append(args,{L"-an",L"-vf",fitFilter(ProxyW,ProxyH,ProxyFps,true),L"-frames:v",L"1",L"-c:v",L"rawvideo",
+        L"-pix_fmt",L"bgra",L"-threads",L"1",L"-sws_flags",L"bilinear+accurate_rnd+bitexact",L"-f",L"rawvideo",path});
+    if(!run(ctx,L"ffmpeg.exe",args,log,error)) return false;
+    File proxy(path);
+    auto& pixels=a.proxy->still;
+    pixels.resize(ProxyW*ProxyH*4);
+    if(!proxy.get(pixels.data(),DWORD(pixels.size()))) { error=L"Prévia da imagem incompleta."; return false; }
+    thumb(*a.proxy);
+    return !ctx.stopped();
+}
 bool importMedia(const MediaContext& ctx,const std::wstring& path,Asset& result,std::wstring& error) {
     if(!exists(path)) { error=L"Arquivo não encontrado:\n"+path; return false; }
     TempDir job(ctx.scratch);
@@ -208,6 +262,11 @@ bool importMedia(const MediaContext& ctx,const std::wstring& path,Asset& result,
     Asset a;
     a.path=path;
     a.name=baseName(path);
+    if(pictureFile(path)) {
+        if(!importStill(ctx,a,job.path,log,error)) return false;
+        result=std::move(a);
+        return true;
+    }
     if(!inspect(ctx,a,log,error)) return false;
     std::wstring seed=tempFile(ctx.scratch);
     if(seed.empty()) { error=L"Não há acesso à pasta dos proxies."; return false; }
@@ -221,7 +280,7 @@ bool importMedia(const MediaContext& ctx,const std::wstring& path,Asset& result,
             L"-frames:v",number((a.frames+1)/2),L"-codec:v",L"mjpeg",L"-pix_fmt",L"yuvj420p",L"-q:v",L"8",
             L"-threads",L"1",L"-f",L"avi",a.proxy->avi});
     }
-    if(a.audio>=0) pcmOutput(args,a.audio,a.frames,PreviewRate,1,a.proxy->pcm=seed+L".pcm");
+    if(a.audio>=0) pcmOutput(args,a.audio,a.frames,PreviewRate,2,a.proxy->pcm=seed+L".pcm");
     if(!run(ctx,L"ffmpeg.exe",args,log,error)) return false;
     if(a.video>=0) {
         File avi(a.proxy->avi);
@@ -237,31 +296,29 @@ bool importMedia(const MediaContext& ctx,const std::wstring& path,Asset& result,
     result=std::move(a);
     return !ctx.stopped();
 }
+static bool muted(const Sequence& s,Lane l) { return l==Video?s.muteA1:l==Music?s.muteA2:s.muteA3; }
+static const Lane AudioLanes[]={Video,Music,Voice};
 std::vector<Sound> previewSounds(const Project& p) {
     std::vector<Sound> out;
-    int pos=0;
-    for(Clip c:p.seq.video) {
-        const Asset& a=p.assets[c.asset];
-        if(a.proxy && !a.proxy->pcm.empty() && c.gain && !p.seq.muteA1) {
-            c.pos=pos;
-            out.push_back(Sound(a.proxy->pcm,c));
+    for(Lane l:AudioLanes) {
+        if(muted(p.seq,l)) continue;
+        int pos=0;
+        for(Clip c:laneOf(p.seq,l)) {
+            const Asset& a=p.assets[c.asset];
+            if(l==Video) { c.pos=pos; pos+=c.len; }
+            if(a.proxy && !a.proxy->pcm.empty() && c.gain) out.push_back(Sound(a.proxy->pcm,c));
         }
-        pos+=c.len;
-    }
-    if(!p.seq.muteA2) for(const Clip& c:p.seq.music) {
-        const Asset& a=p.assets[c.asset];
-        if(a.proxy && !a.proxy->pcm.empty() && c.gain) out.push_back(Sound(a.proxy->pcm,c));
     }
     return out;
 }
 void Mixer::set(std::vector<Sound> s) {
     sounds_.swap(s);
-    for(int i=0;i<2;++i) { paths_[i].clear(); files_[i].close(); }
+    for(int i=0;i<3;++i) { paths_[i].clear(); files_[i].close(); }
     last_=0;
 }
 File& Mixer::audioFile(const std::wstring& path) {
-    for(int i=0;i<2;++i) if(paths_[i]==path) { last_=i; return files_[i]; }
-    last_=1-last_;
+    for(int i=0;i<3;++i) if(paths_[i]==path) return files_[i];
+    last_=(last_+1)%3;
     paths_[last_]=path;
     files_[last_].open(path);
     return files_[last_];
@@ -272,15 +329,31 @@ bool Mixer::fill(int t,int count,int rate,int channels,int16_t* out) {
     bool ok=true;
     for(const Sound& s:sounds_) {
         const Clip& c=s.clip;
-        int in=c.pos*perFrame, lo=std::max(t,in), hi=std::min(t+count,in+c.len*perFrame);
+        int begin=c.pos*perFrame,lo=std::max(t,begin),hi=std::min(t+count,begin+c.len*perFrame);
         if(hi<=lo || !c.gain) continue;
         DWORD n=DWORD((hi-lo)*channels);
         input_.resize(n);
         File& file=audioFile(s.path);
-        if(!file.seek(uint64_t(c.in*perFrame+lo-in)*channels*2)) { ok=false; continue; }
+        if(!file.seek(uint64_t(c.in*perFrame+lo-begin)*channels*2)) { ok=false; continue; }
         DWORD got=file.read(input_.data(),n*2)/2;
         int32_t* offset=&sum_[(lo-t)*channels];
-        for(DWORD i=0;i<got;++i) offset[i]+=int(input_[i])*c.gain/100;
+        int in=std::min(c.fx.fadeIn,s.fadeLength)*perFrame, end=std::min(c.fx.fadeOut,s.fadeLength)*perFrame;
+        int elapsed=lo-begin+s.fadeOffset*perFrame, total=s.fadeLength*perFrame;
+        if(!in && !end && (channels==1 || !c.fx.pan)) {
+            for(DWORD i=0;i<got;++i) offset[i]+=int(input_[i])*c.gain/100;
+        } else {
+            int pan[]={100-std::max(0,c.fx.pan),100+std::min(0,c.fx.pan)};
+            for(DWORD i=0;i+DWORD(channels)<=got;i+=channels,++elapsed) {
+                int gain=256;
+                if(in>1 && elapsed<in) gain=elapsed*256/(in-1);
+                int remain=total-1-elapsed;
+                if(end>1 && remain<end) gain=std::min(gain,std::max(0,remain)*256/(end-1));
+                for(int k=0;k<channels;++k) {
+                    int v=int(input_[i+k])*c.gain*gain/(100*256);
+                    offset[i+k]+=channels==2?v*pan[k]/100:v;
+                }
+            }
+        }
     }
     for(size_t i=0;i<sum_.size();++i) out[i]=int16_t(std::max(-32768,std::min(32767,int(sum_[i]))));
     return ok;
@@ -291,85 +364,223 @@ struct StagedOutput {
     explicit StagedOutput(const std::wstring& target) : path(tempFile(dirName(target))) {}
     ~StagedOutput() { if(!path.empty()) DeleteFileW(path.c_str()); }
 };
-static void videoOutput(Args& a,int index,int frames,RenderPreset p,const std::wstring& dest) {
-    append(a,{L"-map",stream(index),L"-an",L"-vf",fitFilter(p.width,p.height,Fps)+L",tpad=stop_mode=clone:stop="+number(frames),
-        L"-frames:v",number(frames),L"-c:v",L"libx264",L"-preset",L"ultrafast",L"-profile:v",L"baseline",L"-crf",L"21",
-        L"-g",L"48",L"-pix_fmt",L"yuv420p",L"-threads",L"1",L"-map_metadata",L"-1",L"-f",L"mp4",dest});
+// Keep only the last visual sources' decoded stills on disk. Full resolution
+// pictures are never held in memory while the sidecar is encoding.
+class StillCache {
+    StillInput slots_[3];
+    int keys_[3], next_;
+    bool used_[3];
+public:
+    explicit StillCache(const std::wstring& dir) : keys_{-1,-1,-1},next_(0),used_{false,false,false} {
+        for(int i=0;i<3;++i) slots_[i].path=join(dir,L"still-"+number(i)+L".rgba");
+    }
+    void newSpan() { std::fill(used_,used_+3,false); }
+    const StillInput* get(const Project& p,int key,std::wstring& error) {
+        for(int i=0;i<3;++i) if(keys_[i]==key) { used_[i]=true; return &slots_[i]; }
+        int use=next_;
+        while(used_[use]) use=(use+1)%3;
+        used_[use]=true;
+        next_=(use+1)%3;
+        keys_[use]=-1;
+        if(!decodeStill(p.assets[key].path,slots_[use],error)) return 0;
+        keys_[use]=key;
+        return &slots_[use];
+    }
+};
+static std::wstring decimal(int value) {
+    int n=std::abs(value);
+    return (value<0?L"-":L"")+number(n/1000)+L"."+number(1000+n%1000).substr(1);
+}
+struct ExportGraph {
+    const Project& project;
+    int width,height,frames,index;
+    StillCache& cache;
+    Args args;
+    std::wstring graph;
+    ExportGraph(const Project& p,RenderPreset preset,int n,StillCache& c) :
+        project(p),width(preset.width),height(preset.height),frames(n),index(0),cache(c),args(ff()),
+        graph(L"sws_flags=bilinear+accurate_rnd+bitexact;") {}
+    std::wstring period() const { return L"trim=end_frame="+number(frames); }
+    void black(const std::wstring& tag) {
+        graph+=L"color=c=black:s="+number(width)+L"x"+number(height)+L":r="+number(Fps)+L","+period()+L"["+tag+L"];";
+    }
+    void over(const std::wstring& base,const std::wstring& layer,const std::wstring& tag,int x,int y,bool title=false) {
+        graph+=L"["+base+L"]["+layer+L"]overlay=x="+number(x)+L":y="+number(y)+
+            (title?L":eof_action=repeat:format=yuv420":L":shortest=1:format=yuv420")+L"["+tag+L"];";
+    }
+    bool layer(const Clip* clip,int frame,const std::wstring& base,const std::wstring& tag,std::wstring& error) {
+        if(!clip || clip->fx.opacity==0) { if(base.empty()) black(tag); return !clip || base.empty(); }
+        const Asset& a=project.assets[clip->asset];
+        const Effects& fx=clip->fx;
+        PictureBox b=pictureBox(fx,width,height);
+        bool full=b.x==0 && b.y==0 && b.w==width && b.h==height;
+        bool composition=!base.empty() || !full || a.still || fx.opacity!=100;
+        int input=index++, skip=0;
+        if(a.still) {
+            const StillInput* still=cache.get(project,clip->asset,error);
+            if(!still) return false;
+            rawInput(args,still->path,L"rgba",still->width,still->height,Fps);
+        } else {
+            frame=std::min(frame,a.frames-1);
+            int seek=std::max(0,frame-3); // keep decode handles for CFR rounding near the source tail
+            skip=frame-seek;
+            append(args,{L"-ss",seconds(seek),L"-threads",L"1",L"-i",a.path});
+        }
+        std::wstring label=composition?L"layer"+number(input):tag;
+        graph+=L"["+number(input)+L":"+number(a.video)+L"]setpts=PTS-STARTPTS,"+
+            fitFilter(b.w,b.h,Fps,a.still)+L",tpad=stop_mode=clone:stop="+number(frames+skip)+
+            L",trim=start_frame="+number(skip)+L":end_frame="+number(frames+skip)+L",setpts=PTS-STARTPTS";
+        if(fx.color() || fx.opacity!=100) {
+            graph+=L",format=rgba";
+            if(fx.saturation!=100 || fx.opacity!=100) {
+                graph+=L",colorchannelmixer=aa="+decimal(fx.opacity*10);
+                if(fx.saturation!=100) {
+                    const wchar_t channels[]=L"rgb";
+                    for(int out=0;out<3;++out) for(int in=0;in<3;++in) {
+                        graph+=L":"; graph+=channels[out]; graph+=channels[in]; graph+=L"=";
+                        graph+=decimal(saturationWeight(in,out,fx.saturation));
+                    }
+                }
+            }
+            if(fx.brightness || fx.contrast!=100) {
+                std::wstring lut=L"'clip((val-128)*"+decimal(fx.contrast*10)+L"+"+number(128+fx.brightness)+L",0,255)'";
+                graph+=L",lutrgb=r="+lut+L":g="+lut+L":b="+lut;
+            }
+        }
+        graph+=(composition?L",format=yuva420p[":L",format=yuv420p[")+label+L"];";
+        if(composition) {
+            std::wstring background=base;
+            if(background.empty()) { background=L"black"+number(input); black(background); }
+            over(background,label,tag,b.x,b.y);
+        }
+        return true;
+    }
+    void dissolve(const Scene& s,const std::wstring& tag) {
+        std::wstring t=L"clip((T*24+"+number(s.mainOffset)+L")/"+number(s.dissolve-1)+L",0,1)";
+        graph+=L"[previous][main]blend=all_expr='A*(1-"+t+L")+B*"+t+L"':shortest=1["+tag+L"];";
+    }
+    void title(const std::wstring& raw,const std::wstring& base) {
+        std::wstring input=number(index++)+L":v:0";
+        rawInput(args,raw,L"bgra",width,height,Fps);
+        over(base,input,L"picture",0,0,true);
+    }
+    void output(const std::wstring& label,const std::wstring& dest) {
+        graph.pop_back();
+        append(args,{L"-filter_complex",graph,L"-map",L"["+label+L"]",L"-an",L"-frames:v",number(frames),
+            L"-c:v",L"libx264",L"-preset",L"ultrafast",L"-profile:v",L"baseline",L"-crf",L"21",
+            L"-g",L"48",L"-pix_fmt",L"yuv420p",L"-threads",L"1",L"-map_metadata",L"-1",L"-f",L"mp4",dest});
+    }
+};
+static bool renderPicture(const MediaContext& ctx,const Project& p,int first,int end,RenderPreset preset,
+                          const std::wstring& temp,const std::wstring& log,std::wstring& playlist,std::wstring& error) {
+    auto cuts=sceneCuts(p.seq,first,end);
+    StillCache stills(temp);
+    const std::wstring titleFile=join(temp,L"title.bgra");
+    TitleStyle lastTitle;
+    std::vector<uint8_t> glyphs;
+    std::string entries="ffconcat version 1.0\n";
+    for(size_t i=0;i+1<cuts.size();++i) {
+        if(ctx.stopped()) return false;
+        int t=cuts[i], n=cuts[i+1]-t;
+        Scene scene=sceneAt(p.seq,t);
+        ctx.report(3+62*(t-first)/(end-first),L"Compondo • "+timecode(t));
+        stills.newSpan();
+        ExportGraph g(p,preset,n,stills);
+        if(!g.layer(scene.main,scene.main?scene.main->in+scene.mainOffset:0,L"",L"main",error)) return false;
+        std::wstring label=L"main";
+        if(scene.dissolve) {
+            auto prev=scene.previous;
+            if(!g.layer(prev,prev?prev->in+prev->len+scene.mainOffset:0,L"",L"previous",error)) return false;
+            label=L"transition"; g.dissolve(scene,label);
+        }
+        if(scene.overlay && scene.overlay->fx.opacity>0) {
+            if(!g.layer(scene.overlay,scene.overlay->in+scene.overlayOffset,label,L"upper",error)) return false;
+            label=L"upper";
+        }
+        if(scene.title) {
+            const TitleStyle& text=scene.title->title;
+            if(!(lastTitle==text)) {
+                if(!rasterTitle(text,preset.width,preset.height,glyphs)) { error=L"Não foi possível rasterizar o título."; return false; }
+                File textImage(titleFile,true);
+                if(!textImage.put(glyphs.data(),DWORD(glyphs.size()))) { error=L"Não foi possível gravar o título temporário."; return false; }
+                lastTitle=text;
+            }
+            g.title(titleFile,label); label=L"picture";
+        }
+        std::wstring name=L"segment-"+number(int(i))+L".mp4";
+        g.output(label,join(temp,name));
+        if(!run(ctx,L"ffmpeg.exe",g.args,log,error,temp)) return false;
+        entries+="file "+utf8(name)+"\nduration "+utf8(seconds(n))+"\n";
+    }
+    playlist=join(temp,L"sequence.ffconcat");
+    if(!putText(playlist,entries)) { error=L"Não foi possível gravar a lista de segmentos."; return false; }
+    return true;
+}
+static bool prepareMix(const MediaContext& ctx,const Project& p,int first,int end,const std::wstring& temp,
+                       const std::wstring& log,std::wstring& mix,std::wstring& error) {
+    std::vector<Sound> sounds;
+    for(Lane lane:AudioLanes) {
+        if(muted(p.seq,lane)) continue;
+        int pos=0;
+        for(const Clip& c:laneOf(p.seq,lane)) {
+            if(lane!=Video) pos=c.pos;
+            int start=pos;
+            pos+=c.len;
+            int lo=std::max(first,start), hi=std::min(end,pos);
+            const Asset& a=p.assets[c.asset];
+            if(hi<=lo || !c.gain || a.audio<0) continue;
+            ctx.report(68,L"Preparando áudio • "+a.name);
+            std::wstring pcm=join(temp,L"audio-"+number(int(sounds.size()))+L".pcm");
+            Args args=ff();
+            append(args,{L"-ss",seconds(c.in+lo-start),L"-threads",L"1",L"-i",a.path});
+            pcmOutput(args,a.audio,hi-lo,RenderRate,2,pcm);
+            if(!run(ctx,L"ffmpeg.exe",args,log,error)) return false;
+            Clip part=c;
+            part.in=0; part.pos=lo-first; part.len=hi-lo;
+            sounds.push_back(Sound(pcm,part,lo-start,c.len));
+        }
+    }
+    ctx.report(83,L"Mixando A1, A2 e A3");
+    mix=join(temp,L"mix.pcm");
+    File pcm(mix,true);
+    Mixer mixer;
+    mixer.set(std::move(sounds));
+    int samples=(end-first)*(RenderRate/Fps);
+    std::vector<int16_t> buf(4096*2);
+    for(int start=0;start<samples;start+=4096) {
+        if(ctx.stopped()) return false;
+        int count=std::min(4096,samples-start);
+        if(!mixer.fill(start,count,RenderRate,2,buf.data()) || !pcm.put(buf.data(),count*4)) {
+            error=L"Não foi possível gravar a mixagem. Verifique o espaço disponível.";
+            return false;
+        }
+    }
+    return true;
 }
 bool render(const MediaContext& ctx,const Project& p,const std::wstring& target,RenderPreset preset,std::wstring& error) {
-    if(!valid(p,true) || p.seq.video.empty()) { error=L"Adicione ao menos um clipe de vídeo a V1."; return false; }
+    if(ctx.stopped()) return false;
+    int total=length(p.seq), first=preset.first, end=preset.last<0?total:preset.last;
+    if(!valid(p,true) || first<0 || end>total || first>=end) { error=L"Sequência vazia ou intervalo de exportação inválido."; return false; }
+    if(!preset.audioOnly && !((preset.width==640 && preset.height==360) || (preset.width==854 && preset.height==480) ||
+            (preset.width==1280 && preset.height==720))) { error=L"Resolução de exportação não suportada."; return false; }
     for(const Asset& a:p.assets) if(equalPath(a.path,target)) { error=L"Escolha um nome diferente do arquivo original."; return false; }
+    if(!p.file.empty() && equalPath(p.file,target)) { error=L"A exportação não pode substituir o projeto."; return false; }
     TempDir temp(ctx.scratch);
     StagedOutput out(target);
     if(temp.path.empty() || out.path.empty()) { error=L"Não foi possível criar o arquivo temporário. Verifique o espaço e as permissões."; return false; }
-    const std::wstring log=join(temp.path,L"render.log");
-    std::string playlist="ffconcat version 1.0\n";
-    std::vector<Sound> sounds;
-    int total=length(p.seq), done=0, id=0;
-    for(Clip c:p.seq.video) {
-        const Asset& a=p.assets[c.asset];
-        ctx.report(3+70*done/total,L"Codificando • "+a.name);
-        std::wstring name=L"clip-"+number(id)+L".mp4";
-        Args args=ff();
-        // A single source decode per video clip; linked audio is emitted as a separate output.
-        append(args,{L"-ss",seconds(c.in),L"-threads",L"1",L"-i",a.path});
-        videoOutput(args,a.video,c.len,preset,join(temp.path,name));
-        if(!p.seq.muteA1 && a.audio>=0 && c.gain) {
-            std::wstring pcm=join(temp.path,L"v-"+number(id)+L".pcm");
-            pcmOutput(args,a.audio,c.len,RenderRate,2,pcm);
-            sounds.push_back(Sound(pcm,Clip(c.asset,0,c.len,done,c.gain)));
-        }
-        if(!run(ctx,L"ffmpeg.exe",args,log,error)) return false;
-        playlist+="file "+utf8(name)+"\nduration "+utf8(seconds(c.len))+"\n";
-        done+=c.len;
-        ++id;
-    }
-    if(total>done) {
-        ctx.report(3+70*done/total,L"Preenchendo o fim da sequência");
-        std::wstring black=join(temp.path,L"black.rgb"), name=L"tail.mp4";
-        if(!putText(black,std::string(16*16*3,'\0'))) { error=L"Não há espaço para os arquivos temporários."; return false; }
-        Args args=ff();
-        append(args,{L"-f",L"rawvideo",L"-pixel_format",L"rgb24",L"-video_size",L"16x16",L"-framerate",L"24",L"-i",black});
-        videoOutput(args,0,total-done,preset,join(temp.path,name));
-        if(!run(ctx,L"ffmpeg.exe",args,log,error)) return false;
-        playlist+="file "+utf8(name)+"\nduration "+utf8(seconds(total-done))+"\n";
-    }
-    if(!p.seq.muteA2) for(const Clip& c:p.seq.music) {
-        if(!c.gain) continue;
-        const Asset& a=p.assets[c.asset];
-        ctx.report(75,L"Preparando áudio • "+a.name);
-        std::wstring pcm=join(temp.path,L"a-"+number(id++)+L".pcm");
-        Args args=ff();
-        append(args,{L"-ss",seconds(c.in),L"-threads",L"1",L"-i",a.path});
-        pcmOutput(args,a.audio,c.len,RenderRate,2,pcm);
-        if(!run(ctx,L"ffmpeg.exe",args,log,error)) return false;
-        sounds.push_back(Sound(pcm,Clip(c.asset,0,c.len,c.pos,c.gain)));
-    }
-    const std::wstring mix=join(temp.path,L"mix.pcm"), list=join(temp.path,L"sequence.ffconcat");
-    if(!putText(list,playlist)) { error=L"Não foi possível gravar a lista de segmentos."; return false; }
-    ctx.report(87,L"Mixando as faixas A1 e A2");
-    {
-        File pcm(mix,true);
-        Mixer mixer;
-        mixer.set(std::move(sounds));
-        int samples=total*(RenderRate/Fps);
-        std::vector<int16_t> buf(4096*2);
-        for(int start=0;start<samples;start+=4096) {
-            if(ctx.stopped()) return false;
-            int count=std::min(4096,samples-start);
-            if(!mixer.fill(start,count,RenderRate,2,buf.data()) || !pcm.put(buf.data(),count*4)) {
-                error=L"Não foi possível gravar a mixagem. Verifique o espaço disponível.";
-                return false;
-            }
-        }
-    }
-    ctx.report(94,L"Finalizando MP4 • H.264 + AAC");
+    std::wstring log=join(temp.path,L"render.log"),list,mix;
+    if(!preset.audioOnly && !renderPicture(ctx,p,first,end,preset,temp.path,log,list,error)) return false;
+    if(!prepareMix(ctx,p,first,end,temp.path,log,mix,error)) return false;
+    ctx.report(94,preset.audioOnly?L"Finalizando WAV estéreo":L"Finalizando MP4 • H.264 + AAC");
     Args args=ff();
-    append(args,{L"-f",L"concat",L"-safe",L"1",L"-i",list,L"-f",L"s16le",L"-ar",number(RenderRate),L"-ac",L"2",L"-i",mix,
-        L"-map",L"0:v:0",L"-map",L"1:a:0",L"-c:v",L"copy",L"-c:a",L"aac",L"-b:a",L"128k",L"-movflags",L"+faststart",L"-f",L"mp4",out.path});
+    if(!preset.audioOnly) append(args,{L"-f",L"concat",L"-safe",L"1",L"-i",list});
+    append(args,{L"-f",L"s16le",L"-ar",number(RenderRate),L"-ac",L"2",L"-i",mix});
+    if(preset.audioOnly) append(args,{L"-c:a",L"copy",L"-f",L"wav",out.path});
+    else append(args,{L"-map",L"0:v:0",L"-map",L"1:a:0",L"-c:v",L"copy",L"-c:a",L"aac",L"-b:a",L"128k",
+        L"-movflags",L"+faststart",L"-f",L"mp4",out.path});
     if(!run(ctx,L"ffmpeg.exe",args,log,error) || ctx.stopped()) return false;
     if(!MoveFileExW(out.path.c_str(),target.c_str(),MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH)) {
-        error=L"O vídeo foi codificado, mas não foi possível salvar no destino. Verifique as permissões.";
+        error=L"Não foi possível gravar a mídia no destino. Verifique as permissões.";
         return false;
     }
     return true;

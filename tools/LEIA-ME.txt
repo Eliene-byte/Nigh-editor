@@ -1,34 +1,35 @@
-NIGH EDITOR 0.1.0    /    WINDOWS x86 PORTÁTIL
+NIGH EDITOR 0.2.0  |  Windows de 32 bits
 
-COMECE AQUI
+1. Extraia todo o ZIP e abra NighEditor.exe. Mantenha o ffmpeg.exe e o
+   ffprobe.exe ao lado dele. Não precisa instalar nem criar conta.
+2. Clique em Abrir demo para ver Maré baixa, ou em Importar para começar.
+3. Use I e O no monitor de fonte para escolher um trecho. Arraste-o da
+   biblioteca para V1 (montagem), V2 (sobreposição), A2 ou A3 (áudio).
 
-1. Extraia a pasta “Nigh Editor” inteira do ZIP.
-2. Dentro dela, abra NighEditor.exe. Deixe ffmpeg.exe e ffprobe.exe ao lado dele.
-3. Clique em Abrir demo, ou em Importar para usar seus próprios arquivos.
-4. Use +, duplo clique ou arraste um item para adicioná-lo à linha do tempo.
-5. Salve o projeto com Ctrl+S. Para um arquivo de vídeo, use Exportar MP4.
+NA LINHA DO TEMPO
+- V1 fecha lacunas ao remover clipes. A1 acompanha V1; V2 só traz imagem.
+- Arraste o centro do clipe para mover e as bordas para aparar.
+- F2 ou duplo clique: propriedades. Em vídeo, ajuste imagem, escala,
+  opacidade e a dissolução na entrada de um clipe em V1. Em áudio, ajuste
+  volume, pan estéreo e fades. T adiciona títulos ou legendas manuais.
+- Espaço reproduz; setas avançam um quadro; C divide; Delete remove.
+  M cria marcador; Page Up/Down navega entre eles. Ferramentas e F1
+  mostram mais atalhos.
+- Alt+I/Alt+O marca o intervalo de saída. Exporte MP4 (360p, 480p ou
+  720p) ou WAV estéreo. Prefira 360p/480p no hardware mais antigo.
 
-EDIÇÃO
+PROJETOS
+Salve .nigh e mantenha seus originais. Se um original mudar de pasta,
+o editor pode pedir para relocalizá-lo. Depois do primeiro salvamento,
+o editor tenta manter uma cópia .nigh.recuperacao junto do projeto.
+Abra o .nigh original para recuperar após uma interrupção. A v0.2 lê
+projetos da v0.1. Use Salvar como para preservar uma cópia antiga.
 
-• V1: clipes de vídeo consecutivos; A1: áudio original vinculado; A2: trilha à parte.
-• Clique na régua para posicionar o cursor. Espaço reproduz ou pausa; ← e → avançam por quadro.
-• C divide o clipe selecionado no cursor. I e O aparam a entrada ou saída.
-• Arraste a borda para aparar e o centro para mover. Delete remove.
-• No inspetor, ajuste o volume do clipe; Alt+↑/↓ também funciona.
-• Ctrl+Z/Y desfaz/refaz; Ctrl+roda muda o zoom; F1 abre a ajuda.
+HARDWARE
+Alvo: Windows XP SP3/x86 com SSE2 (como Pentium M); recomendados 1 GB
+RAM, tela 1024 x 600 e disco livre para a prévia e a exportação. A
+prévia usa proxies 320 x 180 a 12 qps. Os testes em Windows atual não
+substituem uma validação num notebook físico de 2005.
 
-PARA NOTEBOOKS ANTIGOS
-
-Windows de 32 bits, alvo Windows XP SP3. Processador com SSE2 (por exemplo,
-Pentium M), tela recomendada de 1024 × 600 ou maior e 1 GB de RAM recomendados.
-Não requer conta, internet, .NET ou GPU dedicada. É um alvo de projeto; não houve teste
-em hardware de 2005. A prévia é feita a 320 × 180 / 12 quadros por segundo.
-A saída MP4 (H.264 + AAC) usa os originais a 24 qps, em 360p ou 480p.
-
-Os projetos .nigh referenciam os arquivos originais; não os mova ou apague.
-A pasta TEMP guarda as prévias até fechar o editor. Deixe espaço livre; importação
-e exportação levam mais tempo para vídeos grandes ou codecs pesados. Limite de 2 h
-por mídia e sequência. Use mídias de origem confiável, sobretudo em Windows XP.
-
-Licenças, avisos e código-fonte correspondente dos codecs ficam em Licencas.
-Nigh Editor é independente e não faz parte do Adobe Premiere Pro.
+Licenças e fontes dos codecs: subpasta Licencas.
+Releases: https://github.com/Eliene-byte/Nigh-editor/releases

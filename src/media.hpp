@@ -12,8 +12,9 @@ struct MediaContext {
     void report(int p,const std::wstring& text) const { if(progress) progress(p,text); }
 };
 struct RenderPreset {
-    int width,height;
-    RenderPreset(int w=640,int h=360) : width(w),height(h) {}
+    int width,height,first,last;
+    bool audioOnly;
+    RenderPreset(int w=640,int h=360) : width(w),height(h),first(0),last(-1),audioOnly(false) {}
 };
 bool codecsPresent(const std::wstring& tools);
 bool importMedia(const MediaContext& ctx,const std::wstring& path,Asset& asset,std::wstring& error);
@@ -30,13 +31,15 @@ public:
 struct Sound {
     std::wstring path;
     Clip clip;
-    Sound(const std::wstring& p,const Clip& c) : path(p),clip(c) {}
+    int fadeOffset, fadeLength;
+    Sound(const std::wstring& p,const Clip& c,int offset=0,int full=0) :
+        path(p),clip(c),fadeOffset(offset),fadeLength(full?full:c.len) {}
 };
 std::vector<Sound> previewSounds(const Project& p);
 class Mixer {
     std::vector<Sound> sounds_;
-    File files_[2];
-    std::wstring paths_[2];
+    File files_[3];
+    std::wstring paths_[3];
     int last_;
     std::vector<int32_t> sum_;
     std::vector<int16_t> input_;

@@ -5,7 +5,7 @@
 namespace nigh {
 class Player {
     enum { BufCount=4, BufSamples=2048 };
-    struct Slot { WAVEHDR header; int16_t data[BufSamples]; } slots_[BufCount];
+    struct Slot { WAVEHDR header; int16_t data[BufSamples*2]; } slots_[BufCount];
     Mixer mixer_;
     HWAVEOUT wave_;
     int start_,end_,sent_,last_;

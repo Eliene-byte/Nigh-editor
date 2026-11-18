@@ -58,7 +58,9 @@ prefix="$work/prefix"
 
 (
     cd "$work/ffmpeg"
-    if [[ ! -f ffbuild/config.mak ]]; then
+    key="$(sha256sum "$root/tools/build-codecs.sh" | cut -d' ' -f1):$triplet:$prefix"
+    if [[ ! -f ffbuild/config.mak || ! -f .nigh-config || $(cat .nigh-config) != "$key" ]]; then
+        if [[ -f ffbuild/config.mak ]]; then make distclean; fi
         PKG_CONFIG_PATH="$prefix/lib/pkgconfig" ./configure "${cross[@]}" \
             --enable-gpl --enable-libx264 --enable-static --disable-shared --disable-autodetect \
             --disable-debug --disable-doc --enable-small --disable-everything --disable-network \
@@ -67,12 +69,13 @@ prefix="$work/prefix"
             --extra-cflags="${xp_flags[*]} -I$prefix/include" --extra-libs="-L$prefix/lib -lx264" \
             --enable-protocol=file,pipe \
             --enable-demuxer=mov,matroska,avi,mpegts,mpegps,asf,flv,concat,dv,ogg,wav,mp3,aac,flac,pcm_s16le,rawvideo \
-            --enable-muxer=mp4,avi,pcm_s16le,null \
+            --enable-muxer=mp4,avi,wav,rawvideo,pcm_s16le,null \
             --enable-parser=h264,hevc,mpeg4video,mpegvideo,aac,aac_latm,mpegaudio,ac3,flac,opus,vp8,vp9,h263,vc1,mjpeg,vorbis \
             --enable-decoder=h264,hevc,mpeg4,mpeg2video,mpeg1video,vp8,vp9,mjpeg,dvvideo,h263,wmv1,wmv2,wmv3,vc1,rawvideo,prores,vp6f,flv,aac,aac_latm,mp3,mp2,ac3,flac,vorbis,opus,pcm_s16le,pcm_s16be,pcm_s24le,pcm_s24be,pcm_s32le,pcm_s32be,pcm_u8,pcm_f32le,pcm_f32be,pcm_alaw,pcm_mulaw,adpcm_ima_wav,adpcm_ms,wmav1,wmav2,alac \
-            --enable-encoder=libx264,aac,mjpeg,pcm_s16le \
-            --enable-filter=scale,pad,setsar,fps,tpad,format,aresample,aformat,apad,atrim,trim,anull,null,transpose,hflip,vflip,setpts,asetpts,color,rotate \
+            --enable-encoder=libx264,aac,mjpeg,rawvideo,pcm_s16le \
+            --enable-filter=scale,pad,setsar,fps,tpad,format,aresample,aformat,apad,atrim,trim,anull,null,transpose,hflip,vflip,setpts,asetpts,color,rotate,overlay,blend,lutrgb,colorchannelmixer \
             --enable-bsf=aac_adtstoasc,h264_mp4toannexb,mpeg4_unpack_bframes
+        printf '%s\n' "$key" > .nigh-config
     fi
     make -j "$jobs" "ffmpeg$media_suffix" "ffprobe$media_suffix"
     cp -- "ffmpeg$media_suffix" "ffprobe$media_suffix" "$out/"

@@ -1,6 +1,7 @@
 #pragma once
 #include "draw.hpp"
 #include "job.hpp"
+#include "comp.hpp"
 #include "player.hpp"
 #include <shellapi.h>
 
@@ -9,26 +10,42 @@ const wchar_t AppClass[]=L"NighEditorNative";
 enum Command { CmdNone, CmdFile, CmdNew, CmdOpen, CmdSave, CmdSaveAs, CmdImport, CmdExport, CmdExport360, CmdExport480,
     CmdDemo, CmdHelp, CmdExit, CmdUndo, CmdRedo, CmdSplit, CmdIn, CmdOut, CmdDelete, CmdPlay, CmdFirst, CmdLast,
     CmdPrev, CmdNext, CmdZoomOut, CmdFit, CmdZoomIn, CmdMute1, CmdMute2, CmdGainDown, CmdGainUp, CmdCancel,
-    CmdVideoMode, CmdAssetBase=1000 };
+    CmdVideoMode, CmdTools, CmdProps, CmdTitle, CmdMute3, CmdHideOverlay, CmdInsert, CmdAddOverlay, CmdAddMusic, CmdAddVoice,
+    CmdCopy, CmdPaste, CmdDuplicate, CmdMarker, CmdMarkPrev, CmdMarkNext, CmdWorkIn, CmdWorkOut, CmdWorkClear,
+    CmdSourceClear, CmdExport720, CmdExportWav, CmdUseRange, CmdAssetBase=1000 };
 struct Hit {
     int command;
     RECT area;
     bool enabled;
     Hit(int c,RECT r,bool e) : command(c),area(r),enabled(e) {}
 };
+enum TrackRow { RowTitle, RowOverlay, RowVideo, RowLinked, RowMusic, RowVoice, RowCount };
+inline Lane rowLane(int row) {
+    return row==RowTitle?Titles:row==RowOverlay?Overlay:row==RowMusic?Music:row==RowVoice?Voice:Video;
+}
+inline int laneRow(Lane lane) {
+    return lane==Titles?RowTitle:lane==Overlay?RowOverlay:lane==Music?RowMusic:lane==Voice?RowVoice:RowVideo;
+}
+inline const wchar_t* laneName(Lane lane) {
+    return lane==Titles?L"T1":lane==Overlay?L"V2":lane==Music?L"A2":lane==Voice?L"A3":L"V1 / A1";
+}
+struct SourceRange {
+    int first,last;
+    SourceRange() : first(-1),last(-1) {}
+};
 struct Layout {
     int w,h,labelW, rows;
     bool side;
-    RECT media, mediaList, viewer, display, transportSeek, inspector, gain, timeline, ruler, lanes[3], scroll, status;
+    RECT media, mediaList, viewer, display, transportSeek, inspector, gain, timeline, ruler, lanes[RowCount], scroll, status;
     Layout() : w(0),h(0),labelW(0),rows(0),side(false),media(),mediaList(),viewer(),display(),transportSeek(),inspector(),gain(),timeline(),ruler(),lanes(),scroll(),status() {}
 };
 enum Grab { Idle, Scrub, MonitorSeek, PoolItem, MoveClip, LeftEdge, RightEdge, Scrollbar, AdjustGain };
 struct Drag {
     Grab type;
     bool moved;
-    int x,y,origHead,at,asset,off,targetX;
+    int x,y,origHead,at,asset,off,targetX,targetRow;
     Selection sel;
-    Drag() : type(Idle),moved(false),x(0),y(0),origHead(0),at(0),asset(-1),off(0),targetX(-1) {}
+    Drag() : type(Idle),moved(false),x(0),y(0),origHead(0),at(0),asset(-1),off(0),targetX(-1),targetRow(-1) {}
 };
 class App {
     HWND hwnd_;
@@ -38,9 +55,9 @@ class App {
     std::unique_ptr<Job> job_;
     JobProgress progress_;
     Player player_;
-    FrameReader reader_;
-    const Proxy* frameProxy_;
-    int cachedFrame_;
+    Preview preview_;
+    int cachedFrame_,cachedSource_;
+    SourceRange sourceRanges_[MaxAssets];
     std::vector<uint8_t> pixels_;
     Fonts fonts_;
     HDC back_;
@@ -51,18 +68,20 @@ class App {
     std::vector<Hit> hits_;
     std::vector<Sequence> undo_,redo_;
     Selection selected_;
+    Clip clipboard_;
+    Lane copiedLane_;
     Drag drag_;
     int asset_,source_,sourceHead_,head_,zoom_,first_,assetScroll_,mouseX_,mouseY_,focus_;
-    bool dirty_,demo_,mouseIn_,closeWhenDone_,changingCapture_;
+    bool dirty_,demo_,mouseIn_,closeWhenDone_,changingCapture_,hasClipboard_,useRange_,snapshotPending_,recovered_;
     std::wstring status_;
 
     void redraw(bool all=true);
     void updateTitle();
     void invalidateFrame();
     void layout(int w,int h);
-    const Asset* currentAsset(int& sourceFrame) const;
     bool canDemo() const;
     void paint();
+    void paintContent(HDC dc,RECT client,RECT dirty);
     void button(Canvas& c,int id,RECT r,const std::wstring& text,Glyph g,bool enabled=true,int style=0);
     void pill(Canvas& c,RECT r,const std::wstring& text,unsigned fg,unsigned bg);
     void section(Canvas& c,RECT r,const wchar_t* id,const wchar_t* title);
@@ -97,7 +116,13 @@ class App {
     void commit(Sequence previous,const std::wstring& message);
     void clearHistory();
     void restore(bool redo);
-    void addAsset(int asset,int pos,int before=-1);
+    void addAsset(int asset,int pos,int before=-1,Lane lane=LaneCount,bool insert=false);
+    void resetSource();
+    void trackProperties(bool newTitle=false);
+    void marker();
+    void markSource(bool out);
+    void autoSave();
+    void removeRecovery();
     void newProject();
     bool save(bool as);
     bool confirmDiscard();
@@ -108,12 +133,14 @@ class App {
     bool startJob(std::unique_ptr<Job> job);
     void pollJob();
     void explain(const std::wstring& s,UINT icon=MB_ICONINFORMATION);
-    void menu(int id);
+    void menu(int id,int x=-1,int y=-1);
     void execute(int id);
     const Hit* hit(int x,int y) const;
     RECT commandArea(int id) const;
     bool shortcut(WPARAM key,LPARAM flags);
     void mouseDown(int x,int y,bool dbl);
+    int rowAt(int x,int y) const;
+    Lane dropLane(int asset,int row) const;
     void mouseMove(int x,int y);
     void mouseUp(int x,int y);
     void mouseWheel(int x,int y,int delta,bool ctrl);

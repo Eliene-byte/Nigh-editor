@@ -1,4 +1,5 @@
 #include "app.hpp"
+#include "dialogs.hpp"
 #include <commdlg.h>
 #include <windowsx.h>
 #include <cwchar>
@@ -8,8 +9,19 @@
 namespace nigh {
 static const wchar_t Ready[]=L"Motor local • edição por proxies";
 static const wchar_t ProjectFilter[]=L"Projeto Nigh (*.nigh)\0*.nigh\0\0";
-static const wchar_t MediaFilter[]=L"Vídeo e áudio\0*.mp4;*.m4v;*.mov;*.avi;*.mkv;*.webm;*.mpg;*.mpeg;*.ts;*.mts;*.wmv;*.flv;*.dv;*.wav;*.mp3;*.m4a;*.aac;*.flac;*.ogg;*.opus;*.wma\0Todos os arquivos\0*.*\0\0";
+static const wchar_t MediaFilter[]=L"Vídeo, áudio e imagem\0*.jpg;*.jpeg;*.png;*.bmp;*.mp4;*.m4v;*.mov;*.avi;*.mkv;*.webm;*.mpg;*.mpeg;*.ts;*.mts;*.wmv;*.flv;*.dv;*.wav;*.mp3;*.m4a;*.aac;*.flac;*.ogg;*.opus;*.wma\0Todos os arquivos\0*.*\0\0";
 static const wchar_t ExportFilter[]=L"Vídeo MP4 (*.mp4)\0*.mp4\0\0";
+static const wchar_t WavFilter[]=L"Áudio WAV (*.wav)\0*.wav\0\0";
+static std::wstring recoveryPath(const std::wstring& file) {
+    std::wstring path=file+L".recuperacao";
+    return file.empty() || path.size()>=MAX_PATH?L"":path;
+}
+static bool knownRecovery(const std::wstring& path) {
+    if(!exists(path)) return false;
+    Project snapshot;
+    std::wstring why;
+    return readProject(path,snapshot,why);
+}
 static const wchar_t* DemoFiles[]={L"Dunas.mp4",L"Espuma.mp4",L"Horizonte.mp4",L"Ambiencia.m4a"};
 static bool projectPath(const std::wstring& s) {
     return s.size()>=5 && equalPath(s.substr(s.size()-5),L".nigh");
@@ -46,12 +58,12 @@ static std::wstring chooseSave(HWND hwnd,const wchar_t* title,const wchar_t* fil
     ofn.Flags=OFN_EXPLORER|OFN_OVERWRITEPROMPT|OFN_PATHMUSTEXIST|OFN_NOCHANGEDIR;
     return GetSaveFileNameW(&ofn)?fullPath(buf):L"";
 }
-App::App() : hwnd_(0),dir_(appDirectory()),frameProxy_(0),cachedFrame_(-1),back_(0),bmp_(0),baseBmp_(0),bw_(0),bh_(0),
+App::App() : hwnd_(0),dir_(appDirectory()),cachedFrame_(-1),cachedSource_(-2),back_(0),bmp_(0),baseBmp_(0),bw_(0),bh_(0),copiedLane_(Video),
     asset_(-1),source_(-1),sourceHead_(0),head_(0),zoom_(0),first_(0),assetScroll_(0),mouseX_(0),mouseY_(0),focus_(0),
-    dirty_(false),demo_(false),mouseIn_(false),closeWhenDone_(false),changingCapture_(false),status_(Ready) {}
+    dirty_(false),demo_(false),mouseIn_(false),closeWhenDone_(false),changingCapture_(false),hasClipboard_(false),useRange_(false),snapshotPending_(false),recovered_(false),status_(Ready) {}
 App::~App() {
     job_.reset();
-    player_.stop(); reader_.reset();
+    player_.stop(); preview_.reset();
     if(back_) {
         if(bmp_) { SelectObject(back_,baseBmp_); DeleteObject(bmp_); }
         DeleteDC(back_);
@@ -69,7 +81,7 @@ void App::updateTitle() {
     SetWindowTextW(hwnd_,title.c_str());
 }
 void App::invalidateFrame() {
-    reader_.reset(); frameProxy_=0; cachedFrame_=-1; pixels_.clear();
+    preview_.reset(); cachedFrame_=-1; cachedSource_=-2; pixels_.clear();
 }
 void App::explain(const std::wstring& text,UINT icon) {
     stop();
@@ -120,6 +132,7 @@ void App::playbackTick() {
 void App::clearHistory() { undo_.clear(); redo_.clear(); }
 void App::commit(Sequence previous,const std::wstring& msg) {
     if(!(previous==project_.seq)) {
+        cachedFrame_=-1; snapshotPending_=true;
         if(undo_.size()>=48) undo_.erase(undo_.begin());
         undo_.push_back(std::move(previous)); redo_.clear();
         status_=msg;
@@ -135,20 +148,92 @@ void App::restore(bool forward) {
     stop();
     to.push_back(std::move(project_.seq));
     project_.seq=std::move(from.back()); from.pop_back();
+    if(project_.seq.workIn<0 && project_.seq.workOut<0) useRange_=false;
+    cachedFrame_=-1; snapshotPending_=true;
     selected_=Selection(); dirty_=true; updateTitle();
     first_=limit(first_,0,maxScroll()); seek(head_);
     status_=forward?L"Alteração refeita":L"Alteração desfeita";
     redraw();
 }
-void App::addAsset(int asset,int pos,int before) {
+void App::addAsset(int asset,int pos,int before,Lane lane,bool insert) {
     if(job_ || asset<0 || asset>=int(project_.assets.size())) return;
     stop();
+    const Asset& a=project_.assets[asset];
+    if(lane==LaneCount) lane=a.video>=0?Video:Music;
+    const auto& r=sourceRanges_[asset];
+    int in=std::max(0,r.first), out=r.last<0?a.frames:r.last;
     Sequence old=project_.seq;
-    Selection s=add(project_,asset,pos,before);
-    if(s.index<0) { status_=L"Não há espaço para este clipe na trilha (limite: 2 horas / 256 clipes por trilha)."; redraw(); return; }
+    Selection s=insert?insertVideo(project_,asset,pos,in,out-in):place(project_,asset,lane,pos,in,out-in,before);
+    if(s.index<0) { status_=L"A mídia não cabe nesta faixa ou não tem o tipo necessário."; redraw(); return; }
     asset_=asset; selected_=s;
     seek(startOf(project_.seq,s));
-    commit(std::move(old),L"Clipe adicionado • "+project_.assets[asset].name);
+    commit(std::move(old),L"Clipe em "+std::wstring(laneName(s.lane))+L" • "+a.name);
+}
+void App::resetSource() {
+    for(SourceRange& r:sourceRanges_) r=SourceRange();
+    hasClipboard_=false; useRange_=false;
+}
+void App::markSource(bool out) {
+    const Asset& a=project_.assets[source_];
+    SourceRange& r=sourceRanges_[source_];
+    int f=limit(sourceHead_,0,a.frames-1);
+    if(out) { r.last=f+1; if(r.first>=r.last) r.first=-1; }
+    else { r.first=f; if(r.last<=f) r.last=-1; }
+    status_=(out?L"Saída da fonte • ":L"Entrada da fonte • ")+timecode(f)+L". Use Inserir ou arraste para a faixa.";
+    redraw();
+}
+void App::trackProperties(bool newTitle) {
+    Clip* selected=get(project_.seq,selected_);
+    if(!newTitle && !selected) return;
+    stop();
+    Clip edit=newTitle?Clip(-1,0,std::min(72,MaxFrames-head_)):*selected;
+    if(newTitle || selected_.lane==Titles) {
+        int cap=MaxFrames-head_;
+        if(!newTitle) {
+            const auto& titles=project_.seq.titles;
+            int next=selected_.index+1;
+            cap=(next<int(titles.size())?titles[next].pos:MaxFrames)-edit.pos;
+        }
+        if(cap<1 || !editTitle(hwnd_,!newTitle,cap,edit)) return;
+    } else {
+        bool sound=selected_.lane!=Overlay && project_.assets[edit.asset].audio>=0;
+        if(!editEffects(hwnd_,selected_.lane,sound,edit)) return;
+    }
+    Sequence old=project_.seq;
+    if(newTitle) {
+        selected_=paste(project_.seq,Titles,edit,head_);
+        if(selected_.index<0) { explain(L"Sem espaço na faixa T1 para este título.",MB_ICONWARNING); return; }
+        seek(startOf(project_.seq,selected_));
+    } else {
+        *selected=edit;
+        if(source_>=0 || head_<startOf(project_.seq,selected_) || head_>=startOf(project_.seq,selected_)+edit.len)
+            seek(startOf(project_.seq,selected_));
+    }
+    commit(std::move(old),newTitle?L"Título adicionado à faixa T1":L"Propriedades atualizadas");
+}
+void App::marker() {
+    stop();
+    const auto& markers=project_.seq.markers;
+    auto i=std::lower_bound(markers.begin(),markers.end(),head_,[](const Marker& m,int frame){return m.frame<frame;});
+    std::wstring text=i!=markers.end() && i->frame==head_?i->text:L"Marcador "+number(int(markers.size())+1);
+    if(!editMarker(hwnd_,head_,text)) return;
+    Sequence old=project_.seq;
+    if(!putMarker(project_.seq,head_,text) && !text.empty()) { explain(L"Limite de 128 marcadores.",MB_ICONWARNING); return; }
+    commit(std::move(old),text.empty()?L"Marcador removido":L"Marcador • "+text);
+}
+void App::autoSave() {
+    if(job_ || !dirty_ || !snapshotPending_ || drag_.type!=Idle || !IsWindowEnabled(hwnd_)) return;
+    const std::wstring target=recoveryPath(project_.file);
+    for(const Asset& a:project_.assets) if(equalPath(a.path,target)) return;
+    if(!target.empty() && (!exists(target) || knownRecovery(target)) && saveProject(project_,target)) {
+        snapshotPending_=false; recovered_=true;
+    }
+}
+void App::removeRecovery() {
+    if(!recovered_) return;
+    std::wstring path=recoveryPath(project_.file);
+    if(knownRecovery(path)) DeleteFileW(path.c_str());
+    recovered_=false;
 }
 bool App::confirmDiscard() {
     if(!dirty_) return true;
@@ -158,10 +243,10 @@ bool App::confirmDiscard() {
 }
 void App::newProject() {
     if(!confirmDiscard()) return;
-    stop(); invalidateFrame();
+    stop(); invalidateFrame(); removeRecovery(); resetSource();
     project_=Project(); clearHistory();
     selected_=Selection(); source_=asset_=-1; head_=first_=zoom_=assetScroll_=0;
-    dirty_=demo_=false; status_=L"Projeto em branco • importe suas mídias";
+    dirty_=demo_=snapshotPending_=false; status_=L"Projeto em branco • importe suas mídias";
     updateTitle(); redraw();
 }
 bool App::save(bool as) {
@@ -176,9 +261,13 @@ bool App::save(bool as) {
         explain(L"O projeto não pode substituir um arquivo de mídia.",MB_ICONWARNING); return false;
     }
     if(!saveProject(project_,target)) { explain(L"Não foi possível salvar o projeto. Verifique o espaço e as permissões.",MB_ICONWARNING); return false; }
+    removeRecovery();
     project_.file=target;
+    // A normal save supersedes any older snapshot for this destination.
+    std::wstring abandoned=recoveryPath(target);
+    if(knownRecovery(abandoned)) DeleteFileW(abandoned.c_str());
     project_.name=baseName(target).substr(0,baseName(target).size()-5);
-    dirty_=demo_=false;
+    dirty_=demo_=snapshotPending_=false;
     status_=L"Projeto salvo • "+baseName(target);
     updateTitle(); redraw();
     return true;
@@ -206,8 +295,37 @@ void App::openProject(const std::wstring& path) {
         target=fullPath(paths[0]);
     }
     if(target.empty() || !confirmDiscard()) return;
+    std::wstring snapshot=recoveryPath(target);
+    bool recover=knownRecovery(snapshot) && MessageBoxW(hwnd_,L"Há uma cópia de recuperação. Abrir as edições recuperadas?\n\nO projeto original não será alterado até você salvar.",
+        L"Recuperar projeto",MB_YESNO|MB_ICONQUESTION)==IDYES;
+    Project draft;
+    std::wstring why;
+    if(!readProject(recover?snapshot:target,draft,why)) {
+        if(!recover || MessageBoxW(hwnd_,L"A cópia de recuperação não pôde ser lida. Abrir o original?",L"Nigh Editor",
+            MB_YESNO|MB_ICONWARNING)!=IDYES || !readProject(target,draft,why)) { explain(why,MB_ICONWARNING); return; }
+        recover=false;
+    }
+    draft.file=target;
+    draft.name=baseName(target).substr(0,baseName(target).size()-5);
+    bool changed=recover;
+    std::wstring lastFolder;
+    for(Asset& a:draft.assets) if(!exists(a.path)) {
+        std::wstring relocated=lastFolder.empty()?L"":join(lastFolder,baseName(a.path));
+        if(relocated.empty() || !exists(relocated)) {
+            std::wstring prompt=L"Arquivo original ausente:\n"+a.path+L"\n\nLocalizar a mídia agora?";
+            if(MessageBoxW(hwnd_,prompt.c_str(),L"Religar mídia",MB_OKCANCEL|MB_ICONWARNING)!=IDOK) return;
+            auto file=chooseOpen(hwnd_,L"Localizar o arquivo de mídia",MediaFilter,false);
+            if(file.empty()) return;
+            relocated=fullPath(file[0]);
+            if(relocated.empty()) return;
+            lastFolder=dirName(relocated);
+        }
+        a.path=relocated; a.name=baseName(relocated); changed=true;
+    }
     std::unique_ptr<Job> job(new Job(OpenJob,dir_,scratch_.path));
-    job->target=target;
+    job->openedWithChanges=changed;
+    job->target=recover?snapshot:L"";
+    job->project=std::move(draft);
     startJob(std::move(job));
 }
 void App::showDemo() {
@@ -231,12 +349,21 @@ void App::importFiles(std::vector<std::wstring> paths) {
     startJob(std::move(next));
 }
 void App::exportTo(RenderPreset preset) {
-    if(project_.seq.video.empty()) return;
+    int total=length(project_.seq);
+    if(!total) return;
     stop();
-    const std::wstring target=chooseSave(hwnd_,L"Exportar vídeo MP4",ExportFilter,L"mp4",project_.name+L".mp4");
+    if(useRange_) {
+        preset.first=std::max(0,project_.seq.workIn);
+        preset.last=project_.seq.workOut<0?total:std::min(total,project_.seq.workOut);
+        if(preset.first>=preset.last) { explain(L"O intervalo marcado ficou fora da sequência. Ajuste ou limpe In/Out.",MB_ICONWARNING); return; }
+    }
+    const wchar_t* ext=preset.audioOnly?L"wav":L"mp4";
+    const std::wstring suffix=L"."+std::wstring(ext);
+    const std::wstring target=chooseSave(hwnd_,preset.audioOnly?L"Exportar áudio WAV":L"Exportar vídeo MP4",
+        preset.audioOnly?WavFilter:ExportFilter,ext,project_.name+suffix);
     if(target.empty()) return;
-    if(target.size()<4 || !equalPath(target.substr(target.size()-4),L".mp4")) {
-        explain(L"Use a extensão .mp4 para o vídeo exportado.",MB_ICONWARNING); return;
+    if(target.size()<4 || !equalPath(target.substr(target.size()-4),suffix)) {
+        explain(L"Use a extensão "+suffix+L" para este formato.",MB_ICONWARNING); return;
     }
     for(const Asset& a:project_.assets) if(equalPath(a.path,target)) {
         explain(L"Escolha outro nome para não substituir a mídia original.",MB_ICONWARNING); return;
@@ -262,7 +389,7 @@ void App::pollJob() {
         explain(job->error.empty()?status_:job->error,MB_ICONWARNING);
     } else if(job->kind==ExportJob) {
         status_=L"Exportado • "+baseName(job->target);
-        int see=MessageBoxW(hwnd_,(L"Vídeo MP4 criado em:\n\n"+job->target+L"\n\nAbrir a pasta do vídeo?").c_str(),
+        int see=MessageBoxW(hwnd_,(L"Arquivo criado em:\n\n"+job->target+L"\n\nAbrir a pasta da exportação?").c_str(),
             L"Exportação concluída",MB_YESNO|MB_ICONINFORMATION);
         if(see==IDYES) ShellExecuteW(hwnd_,L"open",dirName(job->target).c_str(),0,0,SW_SHOWNORMAL);
     } else if(job->kind==ImportJob) {
@@ -272,41 +399,74 @@ void App::pollJob() {
         asset_=newIndex;
         if(project_.seq.video.empty()) { source_=asset_; sourceHead_=0; }
         assetScroll_=limit(asset_-ui_.rows+1,0,std::max(0,int(project_.assets.size())-ui_.rows));
-        dirty_=true; updateTitle();
+        dirty_=snapshotPending_=true; updateTitle();
         status_=number(count)+(count==1?L" mídia importada":L" mídias importadas")+L" • use + para adicionar à linha do tempo";
         if(job->rejected) explain(number(job->rejected)+L" arquivo(s) não importado(s).\n\n"+job->error,MB_ICONWARNING);
     } else {
-        invalidateFrame();
+        invalidateFrame(); resetSource();
+        if(!equalPath(project_.file,job->project.file)) removeRecovery();
         project_=std::move(job->project); clearHistory();
         selected_=project_.seq.video.empty()?Selection():Selection(Video,0);
         source_=-1; asset_=project_.assets.empty()?-1:0;
-        zoom_=first_=assetScroll_=0; demo_=job->kind==DemoJob; dirty_=false;
-        head_=demo_?std::min(Fps*2+8,length(project_.seq)):0;
-        status_=demo_?L"Demonstração Maré baixa • pressione Espaço para reproduzir":L"Projeto aberto • proxies recriados";
+        zoom_=first_=assetScroll_=0; demo_=job->kind==DemoJob;
+        dirty_=snapshotPending_=job->openedWithChanges;
+        recovered_=!job->target.empty();
+        useRange_=project_.seq.workIn>=0 || project_.seq.workOut>=0;
+        head_=demo_?std::min(144,length(project_.seq)):0;
+        if(demo_ && !project_.seq.overlay.empty()) selected_=Selection(Overlay,0);
+        status_=demo_?L"Maré baixa • títulos, transição, sobreposição e mixagem":
+            dirty_?L"Projeto recuperado ou mídia religada • salve as alterações":L"Projeto aberto • proxies recriados";
         updateTitle();
     }
     redraw();
 }
-void App::menu(int id) {
+void App::menu(int id,int x,int y) {
     stop();
     HMENU m=CreatePopupMenu();
     if(!m) return;
+    const auto addItem=[&](int cmd,const wchar_t* text,bool enabled=true,bool checked=false) {
+        AppendMenuW(m,MF_STRING|(enabled?0:MF_GRAYED)|(checked?MF_CHECKED:0),cmd,text);
+    };
     if(id==CmdFile) {
-        AppendMenuW(m,MF_STRING,CmdNew,L"&Novo projeto\tCtrl+N");
-        AppendMenuW(m,MF_STRING,CmdOpen,L"&Abrir projeto…\tCtrl+O");
-        AppendMenuW(m,MF_STRING,CmdSave,L"&Salvar\tCtrl+S");
-        AppendMenuW(m,MF_STRING,CmdSaveAs,L"Salvar &como…\tCtrl+Shift+S");
+        addItem(CmdNew,L"&Novo projeto\tCtrl+N");
+        addItem(CmdOpen,L"&Abrir projeto…\tCtrl+O");
+        addItem(CmdSave,L"&Salvar\tCtrl+S");
+        addItem(CmdSaveAs,L"Salvar &como…\tCtrl+Shift+S");
         AppendMenuW(m,MF_SEPARATOR,0,0);
-        AppendMenuW(m,MF_STRING,CmdImport,L"&Importar mídia…\tCtrl+I");
-        if(canDemo()) AppendMenuW(m,MF_STRING,CmdDemo,L"Abrir &demonstração");
+        addItem(CmdImport,L"&Importar mídia…\tCtrl+I");
+        if(canDemo()) addItem(CmdDemo,L"Abrir &demonstração");
         AppendMenuW(m,MF_SEPARATOR,0,0);
-        AppendMenuW(m,MF_STRING,CmdHelp,L"&Atalhos e ajuda\tF1");
-        AppendMenuW(m,MF_STRING,CmdExit,L"Sai&r");
+        addItem(CmdHelp,L"&Atalhos e ajuda\tF1");
+        addItem(CmdExit,L"Sai&r");
+    } else if(id==CmdExport) {
+        addItem(CmdExport360,L"MP4 &360p leve     640 × 360");
+        addItem(CmdExport480,L"MP4 &480p             854 × 480");
+        addItem(CmdExport720,L"MP4 &720p HD      1280 × 720 (mais lento)");
+        addItem(CmdExportWav,L"&WAV estéreo       Som da sequência");
+        AppendMenuW(m,MF_SEPARATOR,0,0);
+        addItem(CmdUseRange,L"Exportar somente intervalo In / Out",project_.seq.workIn>=0 || project_.seq.workOut>=0,useRange_);
     } else {
-        AppendMenuW(m,MF_STRING,CmdExport360,L"&360p leve  ·  640 × 360");
-        AppendMenuW(m,MF_STRING,CmdExport480,L"&480p  ·  854 × 480");
+        const Clip* c=get(project_.seq,selected_);
+        const Asset* a=asset_>=0?&project_.assets[asset_]:0;
+        addItem(CmdProps,L"&Propriedades do clipe…\tF2",c!=0);
+        addItem(CmdTitle,L"Novo &título ou legenda…\tT",head_<MaxFrames);
+        addItem(CmdMarker,L"&Marcador no cursor…\tM");
+        AppendMenuW(m,MF_SEPARATOR,0,0);
+        addItem(CmdInsert,L"&Inserir fonte em V1 no cursor\t,",a && a->video>=0);
+        addItem(CmdAddOverlay,L"Enviar fonte para &V2",a && a->video>=0);
+        addItem(CmdAddMusic,L"Enviar áudio da fonte para A&2",a && a->audio>=0);
+        addItem(CmdAddVoice,L"Enviar áudio da fonte para A&3",a && a->audio>=0);
+        AppendMenuW(m,MF_SEPARATOR,0,0);
+        addItem(CmdCopy,L"Copiar clipe\tCtrl+C",c!=0);
+        addItem(CmdPaste,L"Colar clipe no cursor\tCtrl+V",hasClipboard_);
+        addItem(CmdDuplicate,L"Duplicar clipe\tCtrl+D",c!=0);
+        addItem(CmdDelete,L"Remover clipe\tDelete",c!=0);
+        AppendMenuW(m,MF_SEPARATOR,0,0);
+        addItem(CmdWorkIn,L"Marcar entrada da exportação\tAlt+I",head_<length(project_.seq));
+        addItem(CmdWorkOut,L"Marcar saída da exportação\tAlt+O",head_>0);
+        addItem(CmdWorkClear,L"Limpar intervalo de exportação\tAlt+X",project_.seq.workIn>=0 || project_.seq.workOut>=0);
     }
-    RECT r=commandArea(id); POINT p={r.left,r.bottom+3}; ClientToScreen(hwnd_,&p);
+    RECT r=commandArea(id); POINT p={x<0?r.left:x,y<0?r.bottom+3:y}; ClientToScreen(hwnd_,&p);
     int cmd=TrackPopupMenu(m,TPM_RETURNCMD|TPM_NONOTIFY|TPM_LEFTALIGN|TPM_TOPALIGN,p.x,p.y,0,hwnd_,0);
     DestroyMenu(m);
     if(cmd) execute(cmd);
@@ -315,8 +475,8 @@ void App::execute(int id) {
     if(job_ && id!=CmdCancel && id!=CmdHelp) return;
     if(id>=CmdAssetBase) { addAsset(id-CmdAssetBase,head_); return; }
     switch(id) {
-    case CmdFile: case CmdExport:
-        if(id!=CmdExport || !project_.seq.video.empty()) menu(id);
+    case CmdFile: case CmdExport: case CmdTools:
+        if(id!=CmdExport || length(project_.seq)) menu(id);
         return;
     case CmdNew:newProject();return;
     case CmdOpen:openProject();return;
@@ -325,23 +485,34 @@ void App::execute(int id) {
     case CmdDemo:showDemo();return;
     case CmdExport360:exportTo(RenderPreset());return;
     case CmdExport480:exportTo(RenderPreset(854,480));return;
+    case CmdExport720:exportTo(RenderPreset(1280,720));return;
+    case CmdExportWav: { RenderPreset wav; wav.audioOnly=true; exportTo(wav); return; }
+    case CmdUseRange:if(project_.seq.workIn>=0 || project_.seq.workOut>=0) {
+        useRange_=!useRange_;
+        status_=useRange_?L"Exportação: somente o intervalo In / Out":L"Exportação: sequência inteira";
+        redraw();
+    }return;
     case CmdImport: {
-        stop(); auto p=chooseOpen(hwnd_,L"Importar vídeo ou áudio",MediaFilter,true);
+        stop(); auto p=chooseOpen(hwnd_,L"Importar vídeo, áudio ou imagem",MediaFilter,true);
         if(!p.empty()) importFiles(std::move(p));
         return;
     }
     case CmdHelp:
-        explain(L"Fluxo rápido\nImporte mídia e use +, duplo clique ou arraste para a linha do tempo.\n"
-            L"Arraste as bordas para aparar; arraste o centro para mover. A1 acompanha V1 e A2 é independente.\n\n"
-            L"Espaço      Reproduzir / pausar\n←  →          Quadro anterior / seguinte\nHome / End      Início / fim\n"
-            L"C      Dividir no cursor\nI / O      Aparar a entrada / saída até o cursor\nDelete      Remover clipe\n"
-            L"Alt + ↑ / ↓      Ajustar volume do clipe\nCtrl + Z / Y      Desfazer / refazer\n"
-            L"Ctrl + roda      Zoom da linha do tempo\nCtrl + I / S / O / E      Importar / salvar / abrir / exportar\n"
-            L"F1      Ajuda         Tab / Enter      Navegar pelos botões"); return;
+        explain(L"Fluxo rápido\nArraste da biblioteca para V1/V2 ou A2/A3. V1 fecha lacunas automaticamente; A1 acompanha V1. V2 tem apenas imagem.\n"
+            L"Arraste o meio para mover, as bordas para aparar e use o botão direito para mais ferramentas.\n\n"
+            L"Espaço / ← →      Reproduzir e navegar quadro a quadro\n"
+            L"I / O      Marcar trecho no monitor de fonte ou aparar clipe na sequência\n"
+            L", (vírgula)     Inserir fonte no cursor de V1; X limpa In / Out da fonte\n"
+            L"C / Delete     Dividir / remover clipe; F2 abre Propriedades\n"
+            L"T      Novo título; M cria marcador; Page Up / Down navega marcadores\n"
+            L"Alt+I / O / X     Marcar entrada, saída ou limpar intervalo de exportação\n"
+            L"Ctrl+C / V / D     Copiar / colar / duplicar clipe\n"
+            L"Ctrl+Z / Y     Desfazer / refazer; Ctrl+roda para zoom; Shift ignora encaixe\n"
+            L"Ctrl+I / S / O / E     Importar / salvar / abrir / exportar"); return;
     case CmdExit: PostMessageW(hwnd_,WM_CLOSE,0,0);return;
     case CmdCancel: if(job_) { job_->cancel(); progress_.label=L"Cancelando…"; redraw(); } return;
     case CmdPlay:play();return;
-    case CmdVideoMode:stop();source_=-1;redraw(false);return;
+    case CmdVideoMode:stop();source_=-1;redraw();return;
     case CmdFirst:seekMonitor(0);return;
     case CmdLast:seekMonitor(monitorLength());return;
     case CmdPrev:seekMonitor(monitorHead()-1);return;
@@ -351,14 +522,53 @@ void App::execute(int id) {
     case CmdFit:zoom_=first_=0;redraw(false);return;
     case CmdUndo:restore(false);return;
     case CmdRedo:restore(true);return;
+    case CmdTitle:trackProperties(true);return;
+    case CmdProps:trackProperties();return;
+    case CmdMarker:marker();return;
+    case CmdInsert:addAsset(asset_,head_,-1,Video,true);return;
+    case CmdAddOverlay:addAsset(asset_,head_,-1,Overlay);return;
+    case CmdAddMusic:addAsset(asset_,head_,-1,Music);return;
+    case CmdAddVoice:addAsset(asset_,head_,-1,Voice);return;
+    case CmdSourceClear:if(source_>=0) { sourceRanges_[source_]=SourceRange(); status_=L"Intervalo da fonte limpo"; redraw(); }return;
+    case CmdMarkPrev:case CmdMarkNext: {
+        int total=length(project_.seq), next=id==CmdMarkNext?total:0;
+        for(const Marker& m:project_.seq.markers) if(m.frame<=total) {
+            if(id==CmdMarkNext && m.frame>head_) { next=m.frame; break; }
+            if(id==CmdMarkPrev && m.frame<head_) next=m.frame;
+        }
+        seek(next);
+        for(const Marker& m:project_.seq.markers) if(m.frame==next) { status_=m.text; break; }
+        redraw();return;
+    }
+    case CmdCopy:if(const Clip* c=get(project_.seq,selected_)) {
+        clipboard_=*c; copiedLane_=selected_.lane; hasClipboard_=true; status_=L"Clipe copiado • Ctrl+V para colar no cursor"; redraw();
+    }return;
     default:break;
     }
     stop();
+    if(source_>=0 && (id==CmdIn || id==CmdOut)) { markSource(id==CmdOut); return; }
     Sequence old=project_.seq;
     std::wstring label;
-    if(id==CmdMute1 || id==CmdMute2) {
-        bool& val=id==CmdMute1?project_.seq.muteA1:project_.seq.muteA2;
-        val=!val; label=(id==CmdMute1?L"A1 ":L"A2 ") + std::wstring(val?L"silenciada":L"reativada");
+    if(id==CmdMute1 || id==CmdMute2 || id==CmdMute3 || id==CmdHideOverlay) {
+        bool& val=id==CmdMute1?project_.seq.muteA1:id==CmdMute2?project_.seq.muteA2:id==CmdMute3?project_.seq.muteA3:project_.seq.hideV2;
+        val=!val;
+        label=std::wstring(id==CmdMute1?L"A1 ":id==CmdMute2?L"A2 ":id==CmdMute3?L"A3 ":L"V2 ")+
+            (id==CmdHideOverlay?(val?L"oculta":L"visível"):(val?L"silenciada":L"reativada"));
+    } else if(id==CmdWorkIn || id==CmdWorkOut || id==CmdWorkClear) {
+        if(id==CmdWorkClear) {
+            project_.seq.workIn=project_.seq.workOut=-1; useRange_=false; label=L"Intervalo de exportação limpo";
+        } else if(setWorkEdge(project_.seq,id==CmdWorkOut,head_)) {
+            useRange_=true; label=(id==CmdWorkOut?L"Saída da exportação • ":L"Entrada da exportação • ")+timecode(head_);
+        }
+    } else if(id==CmdPaste || id==CmdDuplicate) {
+        const Clip* c=id==CmdPaste?(hasClipboard_?&clipboard_:0):get(project_.seq,selected_);
+        if(!c) return;
+        Lane lane=id==CmdPaste?copiedLane_:selected_.lane;
+        int frame=id==CmdPaste?head_:startOf(project_.seq,selected_)+c->len;
+        int before=lane==Video?(id==CmdPaste?videoBoundary(project_.seq,frame):selected_.index+1):-1;
+        Selection pasted=paste(project_.seq,lane,*c,frame,before);
+        if(pasted.index>=0) { selected_=pasted; seek(startOf(project_.seq,pasted)); label=L"Clipe colocado na mesma faixa"; }
+        else { status_=L"Sem espaço para este clipe"; redraw(); return; }
     } else {
         Clip* clip=get(project_.seq,selected_);
         if(!clip) return;
@@ -379,7 +589,7 @@ void App::execute(int id) {
             break;
         case CmdDelete: erase(project_.seq,selected_);selected_=Selection();label=L"Clipe removido";break;
         case CmdGainUp: case CmdGainDown:
-            if(project_.assets[clip->asset].audio>=0) {
+            if(selected_.lane!=Titles && selected_.lane!=Overlay && project_.assets[clip->asset].audio>=0) {
                 clip->gain=limit(clip->gain+(id==CmdGainUp?5:-5),0,200);
                 label=L"Volume do clipe • "+number(clip->gain)+L"%";
             }
@@ -431,11 +641,15 @@ bool App::shortcut(WPARAM key,LPARAM flags) {
         case 'E':execute(CmdExport);return true;
         case 'Z':execute(shift()?CmdRedo:CmdUndo);return true;
         case 'Y':execute(CmdRedo);return true;
+        case 'C':execute(CmdCopy);return true;
+        case 'V':execute(CmdPaste);return true;
+        case 'D':execute(CmdDuplicate);return true;
         default:return false;
         }
     }
     if(alt()) {
         if(key==VK_UP || key==VK_DOWN) { execute(key==VK_UP?CmdGainUp:CmdGainDown);return true; }
+        if(key=='I' || key=='O' || key=='X') { execute(key=='I'?CmdWorkIn:key=='O'?CmdWorkOut:CmdWorkClear);return true; }
         return false;
     }
     switch(key) {
@@ -444,6 +658,13 @@ bool App::shortcut(WPARAM key,LPARAM flags) {
     case VK_END:execute(CmdLast);return true;
     case VK_LEFT:execute(CmdPrev);return true;
     case VK_RIGHT:execute(CmdNext);return true;
+    case VK_F2:execute(CmdProps);return true;
+    case VK_PRIOR:execute(CmdMarkPrev);return true;
+    case VK_NEXT:execute(CmdMarkNext);return true;
+    case VK_OEM_COMMA:execute(CmdInsert);return true;
+    case 'T':execute(CmdTitle);return true;
+    case 'M':execute(CmdMarker);return true;
+    case 'X':execute(CmdSourceClear);return true;
     case 'C':execute(CmdSplit);return true;
     case 'I':execute(CmdIn);return true;
     case 'O':execute(CmdOut);return true;
@@ -478,9 +699,13 @@ int App::snap(int t,int skip,Lane lane) const {
     check(head_); check(0);
     int v=0;
     for(const Clip& c:project_.seq.video) { v+=c.len;check(v); }
-    for(int i=0;i<int(project_.seq.music.size());++i) if(lane!=Music || i!=skip) {
-        const Clip& c=project_.seq.music[i];check(c.pos);check(c.pos+c.len);
+    for(int l=1;l<LaneCount;++l) {
+        const auto& clips=laneOf(project_.seq,Lane(l));
+        for(int i=0;i<int(clips.size());++i) if(l!=lane || i!=skip) { check(clips[i].pos); check(clips[i].pos+clips[i].len); }
     }
+    for(const Marker& m:project_.seq.markers) check(m.frame);
+    if(project_.seq.workIn>=0) check(project_.seq.workIn);
+    if(project_.seq.workOut>=0) check(project_.seq.workOut);
     return best;
 }
 void App::scrollToPointer(int x,int off) {
@@ -491,6 +716,16 @@ void App::scrollToPointer(int x,int off) {
 void App::track(Grab grab,int x,int y) {
     drag_=Drag(); drag_.type=grab; drag_.x=x; drag_.y=y; drag_.origHead=head_; drag_.at=frameAt(x); drag_.sel=selected_;
     SetCapture(hwnd_);
+}
+int App::rowAt(int x,int y) const {
+    for(int row=0;row<RowCount;++row) if(inside(ui_.lanes[row],x,y)) return row;
+    return -1;
+}
+Lane App::dropLane(int asset,int row) const {
+    if(row<0 || row==RowTitle || asset<0 || asset>=int(project_.assets.size())) return LaneCount;
+    Lane lane=rowLane(row);
+    const Asset& a=project_.assets[asset];
+    return (lane==Video || lane==Overlay?a.video:a.audio)>=0?lane:LaneCount;
 }
 void App::mouseDown(int x,int y,bool dbl) {
     mouseX_=x; mouseY_=y;
@@ -509,26 +744,32 @@ void App::mouseDown(int x,int y,bool dbl) {
         }
         return;
     }
-    if(dbl) return;
-    if(inside(ui_.gain,x,y)) { stop(); track(AdjustGain,x,y); drag_.moved=true; mouseMove(x,y); return; }
-    if(inside(ui_.scroll,x,y) && maxScroll()>0) {
+    if(!dbl && inside(ui_.gain,x,y)) { stop(); track(AdjustGain,x,y); drag_.moved=true; mouseMove(x,y); return; }
+    if(!dbl && inside(ui_.scroll,x,y) && maxScroll()>0) {
         RECT thumb=scrollThumb(); track(Scrollbar,x,y);
         drag_.off=inside(thumb,x,y)?x-thumb.left:width(thumb)/2;
         scrollToPointer(x,drag_.off); return;
     }
-    if(inside(ui_.transportSeek,x,y)) {
+    if(!dbl && inside(ui_.transportSeek,x,y)) {
         track(MonitorSeek,x,y); seekMonitor(monitorFrame(x)); return;
     }
-    if(inside(ui_.ruler,x,y)) { track(Scrub,x,y); seek(frameAt(x),false);return; }
-    for(int row=0;row<3;++row) if(inside(ui_.lanes[row],x,y)) {
+    if(!dbl && inside(ui_.ruler,x,y)) { track(Scrub,x,y); seek(frameAt(x),false);return; }
+    int row=rowAt(x,y);
+    if(row>=0) {
         int f=frameAt(x);
-        selected_=at(project_.seq,row==2?Music:Video,f);
-        // Mark the right handle from inside the clip, including the last rounded pixel.
-        if(selected_.index<0 && x>ui_.ruler.left) selected_=at(project_.seq,row==2?Music:Video,std::max(0,f-1));
+        Lane lane=rowLane(row);
+        selected_=at(project_.seq,lane,f);
+        if(selected_.index<0 && x>ui_.ruler.left) selected_=at(project_.seq,lane,std::max(0,f-1));
         const Clip* c=get(project_.seq,selected_);
+        if(dbl) {
+            seek(f,false);
+            if(c) trackProperties();
+            else if(row==RowTitle) trackProperties(true);
+            redraw();return;
+        }
         Grab g=c?MoveClip:Scrub;
         int start=startOf(project_.seq,selected_);
-        if(c && px(start+c->len)-px(start)>16 && row!=1) {
+        if(c && px(start+c->len)-px(start)>16 && row!=RowLinked) {
             if(x-px(start)<=7 && x>=px(start)-2) g=LeftEdge;
             else if(px(start+c->len)-x<=7 && x<=px(start+c->len)+2) g=RightEdge;
         }
@@ -564,19 +805,25 @@ void App::mouseMove(int x,int y) {
         redraw(); return;
     }
     if(!drag_.moved) return;
-    drag_.targetX=-1;
+    drag_.targetX=-1; drag_.targetRow=-1;
     if(drag_.type==PoolItem || drag_.type==MoveClip) {
-        int lane=drag_.type==PoolItem?(project_.assets[drag_.asset].video>=0?0:2):(drag_.sel.lane==Video?0:2);
-        if(x>=ui_.ruler.left && x<ui_.ruler.right && y>=ui_.ruler.bottom && y<ui_.lanes[2].bottom) {
-            if(lane==0) {
+        int row=rowAt(x,y);
+        bool fromPool=drag_.type==PoolItem;
+        Lane lane=fromPool?dropLane(drag_.asset,row):row>=0 && rowLane(row)==drag_.sel.lane?drag_.sel.lane:LaneCount;
+        if(lane!=LaneCount) {
+            drag_.targetRow=laneRow(lane);
+            if(lane==Video) {
                 int i=videoBoundary(project_.seq,frameAt(x));
                 int f=i<int(project_.seq.video.size())?startOf(project_.seq,Selection(Video,i)):length(project_.seq,Video);
                 drag_.targetX=px(f);
             } else {
                 const Clip* c=get(project_.seq,drag_.sel);
-                int len=drag_.type==PoolItem?project_.assets[drag_.asset].frames:c?c->len:1;
-                int skip=drag_.type==PoolItem?-1:drag_.sel.index;
-                int t=freePosition(project_.seq.music,skip,snap(frameAt(x)-drag_.off,skip,Music),len);
+                int len=c?c->len:1, skip=fromPool?-1:drag_.sel.index;
+                if(fromPool) {
+                    const SourceRange& r=sourceRanges_[drag_.asset];
+                    len=(r.last<0?project_.assets[drag_.asset].frames:r.last)-std::max(0,r.first);
+                }
+                int t=freePosition(laneOf(project_.seq,lane),skip,snap(frameAt(x)-drag_.off,skip,lane),len);
                 if(t>=0) drag_.targetX=px(t);
             }
         }
@@ -584,6 +831,7 @@ void App::mouseMove(int x,int y) {
         if(const Clip* c=get(project_.seq,drag_.sel)) {
             int a=startOf(project_.seq,drag_.sel);
             int origin=drag_.type==LeftEdge?a:a+c->len;
+            drag_.targetRow=laneRow(drag_.sel.lane);
             drag_.targetX=px(snap(origin+frameAt(x)-drag_.at,drag_.sel.index,drag_.sel.lane));
         }
     }
@@ -600,13 +848,14 @@ void App::mouseUp(int x,int y) {
     Drag drag=drag_;
     drag.moved=drag.moved || std::abs(x-drag.x)>3 || std::abs(y-drag.y)>3;
     cancelDrag();
-    bool timeline=x>=ui_.ruler.left && x<ui_.ruler.right && y>=ui_.ruler.bottom && y<ui_.lanes[2].bottom;
-    if(drag.type==PoolItem && drag.moved && timeline) {
-        bool video=project_.assets[drag.asset].video>=0;
-        addAsset(drag.asset,snap(frameAt(x)),video?videoBoundary(project_.seq,frameAt(x)):-1);
-    } else if(drag.type==MoveClip && drag.moved && timeline) {
+    int row=rowAt(x,y);
+    if(drag.type==PoolItem && drag.moved && row>=0) {
+        Lane lane=dropLane(drag.asset,row);
+        if(lane!=LaneCount) addAsset(drag.asset,snap(frameAt(x)),lane==Video?videoBoundary(project_.seq,frameAt(x)):-1,lane);
+        else { status_=L"Use V1/V2 para imagem e A2/A3 para áudio"; redraw(); }
+    } else if(drag.type==MoveClip && drag.moved && row>=0 && rowLane(row)==drag.sel.lane) {
         Sequence old=project_.seq;
-        int target=drag.sel.lane==Video?videoBoundary(project_.seq,frameAt(x)):snap(frameAt(x)-drag.off,drag.sel.index,Music);
+        int target=drag.sel.lane==Video?videoBoundary(project_.seq,frameAt(x)):snap(frameAt(x)-drag.off,drag.sel.index,drag.sel.lane);
         selected_=move(project_.seq,drag.sel,target);
         if(!(old==project_.seq)) seek(startOf(project_.seq,selected_));
         commit(std::move(old),L"Clipe movido");
@@ -681,16 +930,35 @@ LRESULT CALLBACK App::wndProc(HWND hwnd,UINT msg,WPARAM w,LPARAM l) {
 }
 LRESULT App::event(UINT msg,WPARAM w,LPARAM l) {
     switch(msg) {
-    case WM_CREATE: DragAcceptFiles(hwnd_,TRUE); PostMessageW(hwnd_,WM_APP+1,0,0); updateTitle(); return 0;
+    case WM_CREATE: DragAcceptFiles(hwnd_,TRUE); SetTimer(hwnd_,3,45000,0); PostMessageW(hwnd_,WM_APP+1,0,0); updateTitle(); return 0;
     case WM_APP+1:openArgs();return 0;
     case WM_ERASEBKGND:return 1;
     case WM_PAINT:paint();return 0;
+    case WM_PRINTCLIENT: {
+        RECT client;
+        GetClientRect(hwnd_,&client);
+        if(w && width(client)>0 && height(client)>0) paintContent(reinterpret_cast<HDC>(w),client,client);
+        return 0;
+    }
     case WM_GETMINMAXINFO: {
         MINMAXINFO* m=reinterpret_cast<MINMAXINFO*>(l);
         RECT min=rect(0,0,750,488); AdjustWindowRect(&min,WS_OVERLAPPEDWINDOW,FALSE);
         m->ptMinTrackSize.x=width(min);m->ptMinTrackSize.y=height(min);return 0;
     }
     case WM_SIZE:if(w!=SIZE_MINIMIZED) layout(LOWORD(l),HIWORD(l));redraw();return 0;
+    case WM_CONTEXTMENU:
+        if(job_) return 0;
+        if(GET_X_LPARAM(l)==-1 && GET_Y_LPARAM(l)==-1) { menu(CmdTools); return 0; }
+        {
+            POINT p={GET_X_LPARAM(l),GET_Y_LPARAM(l)}; ScreenToClient(hwnd_,&p);
+            int row=rowAt(p.x,p.y);
+            if(row>=0 || inside(ui_.ruler,p.x,p.y)) {
+                int t=frameAt(p.x);
+                if(row>=0) selected_=at(project_.seq,rowLane(row),t);
+                seek(t,false); redraw(); menu(CmdTools,p.x,p.y);
+            }
+        }
+        return 0;
     case WM_MOUSEMOVE:mouseMove(GET_X_LPARAM(l),GET_Y_LPARAM(l));return 0;
     case WM_MOUSELEAVE:mouseIn_=false;redraw();return 0;
     case WM_LBUTTONDOWN:case WM_LBUTTONDBLCLK:mouseDown(GET_X_LPARAM(l),GET_Y_LPARAM(l),msg==WM_LBUTTONDBLCLK);return 0;
@@ -707,14 +975,14 @@ LRESULT App::event(UINT msg,WPARAM w,LPARAM l) {
     }break;
     case WM_KEYDOWN:case WM_SYSKEYDOWN:if(shortcut(w,l)) return 0;break;
     case WM_DROPFILES:doDrop(reinterpret_cast<HDROP>(w));return 0;
-    case WM_TIMER:if(w==1 && player_.active()) playbackTick();else if(w==2) pollJob();return 0;
+    case WM_TIMER:if(w==1 && player_.active()) playbackTick();else if(w==2) pollJob();else if(w==3) autoSave();return 0;
     case WM_CLOSE:
         if(job_) {
             if(MessageBoxW(hwnd_,L"Cancelar a operação em andamento e fechar?",L"Nigh Editor",MB_YESNO|MB_ICONQUESTION)==IDYES) {
                 if(job_) { closeWhenDone_=true; execute(CmdCancel); }
                 else PostMessageW(hwnd_,WM_CLOSE,0,0);
             }
-        } else if(confirmDiscard()) DestroyWindow(hwnd_);
+        } else if(confirmDiscard()) { removeRecovery(); DestroyWindow(hwnd_); }
         return 0;
     case WM_DESTROY:stop(); PostQuitMessage(0);return 0;
     }

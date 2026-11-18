@@ -11,7 +11,7 @@ public:
 };
 }
 Job::Job(JobKind k,const std::wstring& tools,const std::wstring& dir) : thread_(0),
-    cancel_(CreateEventW(0,TRUE,FALSE,0)),tools_(tools),scratch_(dir),kind(k),success(false),rejected(0) {
+    cancel_(CreateEventW(0,TRUE,FALSE,0)),tools_(tools),scratch_(dir),kind(k),success(false),openedWithChanges(false),rejected(0) {
     InitializeCriticalSection(&lock_);
 }
 Job::~Job() {
@@ -43,7 +43,6 @@ void Job::work() {
     };
     if(kind==ExportJob) { success=render(ctx,project,target,preset,error); return; }
     if(kind==OpenJob) {
-        if(!readProject(target,project,error)) return;
         for(const Asset& a:project.assets) paths.push_back(a.path);
         project.assets.clear();
     }
@@ -65,7 +64,18 @@ void Job::work() {
         trim(project,Selection(Video,0),true,8);
         add(project,3,0);
         trim(project,Selection(Music,0),false,length(project.seq,Video));
-        if(Clip* c=get(project.seq,Selection(Music,0))) c->gain=82;
+        if(Clip* c=get(project.seq,Selection(Music,0))) { c->gain=82; c->fx.fadeIn=18; c->fx.fadeOut=32; }
+        if(project.seq.video.size()>1) project.seq.video[1].fx.dissolve=16;
+        Selection picture=place(project,2,Overlay,121,8,63);
+        if(Clip* c=get(project.seq,picture)) { c->fx.contrast=111; c->fx.saturation=90; }
+        Clip title(-1,0,66);
+        title.title.text=L"MARÉ BAIXA"; title.title.color=1; title.title.size=8;
+        paste(project.seq,Titles,title,6);
+        title.title.text=L"A costa em camadas"; title.title.color=0; title.title.size=6; title.len=64;
+        paste(project.seq,Titles,title,121);
+        putMarker(project.seq,0,L"Abertura");
+        putMarker(project.seq,104,L"Dissolução");
+        putMarker(project.seq,121,L"Sobreposição");
     }
     if(kind!=ImportJob && !valid(project,true)) {
         error=L"A duração ou o tipo de um arquivo original mudou. O projeto não foi alterado.";
