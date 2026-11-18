@@ -1,0 +1,4 @@
+# Preserve exact bytes of the pinned weights and regression media.
+/models/*.bin binary
+/tests/fixtures/*.gray binary
+/tests/fixtures/*.raw binary

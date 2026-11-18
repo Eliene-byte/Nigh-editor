@@ -14,16 +14,16 @@ inline RECT inset(RECT r,int x,int y) { InflateRect(&r,-x,-y); return r; }
 inline int limit(int v,int lo,int hi) { return std::max(lo,std::min(v,hi)); }
 
 namespace palette {
-const unsigned Base=0x101216, Bar=0x171a1f, Panel=0x191c21, Surface=0x20242b, Raised=0x262b34;
-const unsigned Edge=0x2c313a, Soft=0x343b44, Text=0xedf0f3, Muted=0xa7afbd, Dim=0x818a99;
-const unsigned Quiet=0x606a79, Screen=0x0b0d11, Accent=0xc7ef80, AccentSoft=0x293827, Ink=0x182315;
+const unsigned Base=0x0f151d, Bar=0x141d27, Panel=0x19232e, Surface=0x222e3b, Raised=0x2a3b4a;
+const unsigned Edge=0x2d3b4b, Soft=0x3b4c5d, Text=0xeef4f9, Muted=0xa9b7c6, Dim=0x8598ac;
+const unsigned Quiet=0x637589, Screen=0x090f17, Accent=0x7ae1f7, AccentSoft=0x203b49, Ink=0x102b3a;
 const unsigned Purple=0xc8b9fc, PurpleBg=0x352d50, Blue=0x8bb8d5, BlueBg=0x253543;
 const unsigned Mint=0x8fd3bd, MintBg=0x223c37, Danger=0xf0a7a1;
 }
 enum Face { Small, Label, Body, Strong, Brand, Title, Mono, MonoLarge, FaceCount };
 enum Glyph { NoGlyph, Logo, Folder, Disk, Plus, Minus, Export, ArrowDown, Film, MusicNote, Scissors,
     TrimLeft, TrimRight, Play, Pause, First, Last, Prev, Next, Undo, Redo, Bin, Speaker, MutedSpeaker,
-    Bolt, Fit, Question, Cancel, Cursor, Keyboard, Check, Target, ListIcon };
+    Bolt, Fit, Question, Cancel, Cursor, Keyboard, Check, Target, ListIcon, Spark };
 
 class Fonts {
     HFONT f_[FaceCount];

@@ -17,8 +17,10 @@ class Preview {
         const std::vector<uint8_t>* read(const Asset& asset,int source);
     } base_,previous_,overlay_;
     TitleStyle lastTitle_;
+    int titleWidth_;
     std::vector<uint8_t> title_,temp_;
 public:
+    Preview() : titleWidth_(0) {}
     void reset();
     bool frame(const Project& p,int frame,int source,std::vector<uint8_t>& pixels);
 };

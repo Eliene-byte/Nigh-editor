@@ -122,7 +122,8 @@ bool putText(const std::wstring& path,const std::string& text) {
 
 // Little-endian project format. Only the edits and paths to original footage are stored.
 static const char Legacy[8]={'N','I','G','H','E','D','1','\n'};
-static const char Signature[8]={'N','I','G','H','E','D','2','\n'};
+static const char Layered[8]={'N','I','G','H','E','D','2','\n'};
+static const char Signature[8]={'N','I','G','H','E','D','3','\n'};
 static bool putInt(File& f,int n) { uint32_t u=n; return f.put(&u,4); }
 static bool getInt(File& f,int& n) {
     uint32_t u;
@@ -174,7 +175,7 @@ static bool putProject(File& f,const std::wstring& base,const Project& p) {
     }
     if(!putInt(f,s.workIn+1) || !putInt(f,s.workOut+1) || !putInt(f,int(s.markers.size()))) return false;
     for(const Marker& m:s.markers) if(!putInt(f,m.frame) || !putString(f,m.text)) return false;
-    return f.flush();
+    return putInt(f,int(s.format)) && f.flush();
 }
 bool saveProject(const Project& p,const std::wstring& target) {
     if(!valid(p,false)) return false;
@@ -191,7 +192,8 @@ static bool getProject(File& f,const std::wstring& base,Project& p) {
     int n;
     if(f.size()>1024*1024 || !f.get(magic,8) || !getInt(f,n) || n>MaxAssets) return false;
     bool old=std::memcmp(magic,Legacy,8)==0;
-    if(!old && std::memcmp(magic,Signature,8)) return false;
+    bool layered=std::memcmp(magic,Layered,8)==0;
+    if(!old && !layered && std::memcmp(magic,Signature,8)) return false;
     for(int i=0;i<n;++i) {
         Asset a;
         int rel;
@@ -228,6 +230,10 @@ static bool getProject(File& f,const std::wstring& base,Project& p) {
             std::wstring text;
             if(!getInt(f,t) || !getString(f,text)) return false;
             p.seq.markers.push_back(Marker(t,text));
+        }
+        if(!layered) {
+            if(!getInt(f,n) || n>=FrameFormats) return false;
+            p.seq.format=FrameFormat(n);
         }
         char end;
         if(f.read(&end,1)) return false;

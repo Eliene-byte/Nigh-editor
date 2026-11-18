@@ -1,11 +1,11 @@
-## Nigh Editor 0.2 — montagem em camadas
+## Nigh Editor 0.3 — assistente local e vídeo vertical
 
-Editor portátil em português para Windows de 32 bits. Baixe o **ZIP**, extraia todo o conteúdo e abra `NighEditor.exe`. Clique em **Abrir demo** para conferir a sequência atualizada *Maré baixa*.
+Baixe o **ZIP para Windows de 32 bits**, extraia tudo e abra `NighEditor.exe`. Para testar as novidades, entre em **Assistente → Abrir demo de IA**. A demo *Caderno de campo* analisa um vídeo de nove segundos e apresenta sugestões que você pode revisar antes de aplicar.
 
-- **V2, T1 e A3:** sobreponha vídeo e PNG transparente, crie títulos/legendas manuais e mixe três faixas de áudio.
-- **Propriedades (`F2`):** escala, posição, opacidade, brilho, contraste, saturação, dissolução na entrada, pan estéreo e fades.
-- **Montagem:** In/Out de fonte, inserção no cursor, cópia de clipes, marcadores nomeados e exportação de um intervalo.
-- **Projetos:** leitura dos `.nigh` da v0.1, religação de arquivos ausentes e cópia de recuperação após o primeiro salvamento.
-- **Saída:** MP4 360p, 480p ou 720p e WAV estéreo, a partir dos originais.
+- **Cortes de cena e fala provável:** navegue pelas sugestões, crie marcadores, use uma fala como trecho da fonte ou divida um clipe nos cortes indicados. Não é transcrição.
+- **Reenquadramento estático por rosto:** `F7` aplica a proposta ao clipe V1. `F2` permite editar a posição e a escala normalmente. Não há identificação de pessoas nem rastreamento de movimento.
+- **Nova área de montagem:** monitores de fonte e programa lado a lado nas telas mais largas, painel de revisão, interface em português e modo Eco (`F8`), com um monitor e prévia de 6 qps na reprodução.
+- **Exportação:** sequência horizontal, quadrada ou vertical, a partir dos originais. MP4 em 24 qps com perfil leve ou detalhado (mais lento); áudio estéreo em WAV.
+- **Projetos:** lê arquivos da v0.1 e v0.2; o novo formato preserva a proporção de saída.
 
-**Alvo:** Windows XP SP3 e x86 com SSE2 (como Pentium M). A prévia leve usa 320 × 180 a 12 qps. Prefira mídia SD e saída 360p/480p nos notebooks antigos; o 720p é mais lento. Os testes automatizados em Windows atual não substituem a validação num notebook real de 2005. O ZIP não é assinado; o arquivo `.sha256` permite conferir sua integridade.
+A análise é local, dura no máximo 90 segundos de **mídia por trecho analisado**, não depende de GPU e não roda durante a reprodução. O alvo continua sendo XP SP3 x86 com SSE2. Prefira SD no hardware antigo. As verificações do pacote no Windows Server 2022 não comprovam fluidez ou compatibilidade integral em um notebook físico de 2005. Esta versão não replica todos os recursos do Premiere. O ZIP não é assinado; confira o `.sha256` para verificar a integridade.

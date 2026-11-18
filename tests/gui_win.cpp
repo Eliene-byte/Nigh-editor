@@ -48,6 +48,13 @@ static bool change(HWND h,int id,const wchar_t* value) {
     DWORD_PTR written=0;
     return target && SendMessageTimeoutW(target,WM_SETTEXT,0,reinterpret_cast<LPARAM>(value),SMTO_ABORTIFHUNG,2000,&written) && written;
 }
+static bool negativeInt(HWND h,int id) {
+    HWND control=GetDlgItem(h,id);
+    wchar_t value[32]={};
+    DWORD_PTR got=0;
+    return control && SendMessageTimeoutW(control,WM_GETTEXT,32,reinterpret_cast<LPARAM>(value),SMTO_ABORTIFHUNG,2000,&got) && got>1 &&
+        std::wcstol(value,0,10)<0;
+}
 static bool snapshot(HWND h,const std::wstring& path) {
     RECT rect;
     if(!GetClientRect(h,&rect)) return false;
@@ -85,7 +92,7 @@ static bool snapshot(HWND h,const std::wstring& path) {
 static int fail(const char* step) { std::fprintf(stderr,"GUI smoke: %s\n",step); return 1; }
 }
 extern "C" int wmain(int argc,wchar_t** argv) {
-    if(argc!=5) return fail("use: gui.exe editor.exe screenshot.bmp project.nigh media.mp4");
+    if(argc!=5) return fail("use: gui.exe editor.exe screenshot-assist.bmp project.nigh media.mp4");
     const std::wstring exe=fullPath(argv[1]), shot=fullPath(argv[2]), path=fullPath(argv[3]), media=fullPath(argv[4]);
     const wchar_t* mainClass=L"NighEditorNative";
     {
@@ -93,8 +100,6 @@ extern "C" int wmain(int argc,wchar_t** argv) {
         if(!demo.start(exe,L"--demo")) return fail("start exact packaged editor");
         HWND window=waitFor(demo,mainClass,L"Maré baixa",30000);
         if(!window) return fail("load packaged layered demo");
-        SetWindowPos(window,0,0,0,1200,747,SWP_NOMOVE|SWP_NOZORDER|SWP_NOACTIVATE);
-        if(!snapshot(window,shot)) std::puts("GUI: screenshot unavailable in this desktop session");
         SetWindowPos(window,0,0,0,1024,600,SWP_NOMOVE|SWP_NOZORDER|SWP_NOACTIVATE);
         PostMessageW(window,WM_KEYDOWN,VK_F2,0);
         HWND effects=waitFor(demo,L"#32770",L"Propriedades do clipe");
@@ -112,6 +117,36 @@ extern "C" int wmain(int argc,wchar_t** argv) {
         if(!confirm) return fail("unsaved change prompt");
         PostMessageW(confirm,WM_COMMAND,IDNO,0);
         if(WaitForSingleObject(demo.info.hProcess,6000)!=WAIT_OBJECT_0) return fail("close demo cleanly");
+    }
+    {
+        Child editor;
+        if(!editor.start(exe,L"--assist-demo")) return fail("start bundled assistant demo");
+        HWND window=waitFor(editor,mainClass,L"Caderno de campo",30000);
+        if(!window) return fail("load Caderno de campo");
+        SetWindowPos(window,0,0,0,1296,792,SWP_NOMOVE|SWP_NOZORDER|SWP_NOACTIVATE);
+        // Analysis is asynchronous. F7 is ignored while the worker is active
+        // and applies the valid proposal once available.
+        DWORD begin=GetTickCount();
+        bool applied=false;
+        do {
+            PostMessageW(window,WM_KEYDOWN,VK_F7,0);
+            applied=waitFor(editor,mainClass,L"Caderno de campo *",80)!=0;
+        } while(!applied && GetTickCount()-begin<15000);
+        if(!applied) return fail("wait for local analysis and apply the face suggestion");
+        PostMessageW(window,WM_KEYDOWN,VK_F6,0); // review the first proposed speech interval
+        Sleep(140);
+        if(!snapshot(window,shot)) std::puts("GUI: screenshot unavailable in this desktop session");
+        SetWindowPos(window,0,0,0,1024,600,SWP_NOMOVE|SWP_NOZORDER|SWP_NOACTIVATE);
+        PostMessageW(window,WM_KEYDOWN,VK_F8,0);
+        PostMessageW(window,WM_KEYDOWN,VK_F2,0);
+        HWND effects=waitFor(editor,L"#32770",L"Propriedades do clipe");
+        if(!effects || !negativeInt(effects,101)) return fail("assistant edits normal X property in compact Eco layout");
+        PostMessageW(effects,WM_COMMAND,IDCANCEL,0);
+        PostMessageW(window,WM_CLOSE,0,0);
+        HWND confirm=waitFor(editor,L"#32770",L"Nigh Editor");
+        if(!confirm) return fail("local suggestion creates an unsaved edit");
+        PostMessageW(confirm,WM_COMMAND,IDNO,0);
+        if(WaitForSingleObject(editor.info.hProcess,6000)!=WAIT_OBJECT_0) return fail("close assistant demo cleanly");
     }
     {
         // Crash-style exit leaves an autosave; the next launch restores it without changing the saved file.
@@ -146,6 +181,6 @@ extern "C" int wmain(int argc,wchar_t** argv) {
         PostMessageW(prompt,WM_COMMAND,IDYES,0);
         if(!waitFor(restart,mainClass,L" *")) return fail("load recovered edits");
     }
-    std::puts("GUI smoke: layered demo, editable FX, titles, autosave and recovery OK.");
+    std::puts("GUI smoke: layered demo, local face suggestion, Eco layout, titles, autosave and recovery OK.");
     return 0;
 }

@@ -58,12 +58,12 @@ static std::wstring chooseSave(HWND hwnd,const wchar_t* title,const wchar_t* fil
     ofn.Flags=OFN_EXPLORER|OFN_OVERWRITEPROMPT|OFN_PATHMUSTEXIST|OFN_NOCHANGEDIR;
     return GetSaveFileNameW(&ofn)?fullPath(buf):L"";
 }
-App::App() : hwnd_(0),dir_(appDirectory()),cachedFrame_(-1),cachedSource_(-2),back_(0),bmp_(0),baseBmp_(0),bw_(0),bh_(0),copiedLane_(Video),
+App::App() : hwnd_(0),dir_(appDirectory()),cachedFrame_(-1),rawFrame_(-1),rawAsset_(-1),back_(0),bmp_(0),baseBmp_(0),bw_(0),bh_(0),copiedLane_(Video),reviewIndex_(-1),
     asset_(-1),source_(-1),sourceHead_(0),head_(0),zoom_(0),first_(0),assetScroll_(0),mouseX_(0),mouseY_(0),focus_(0),
-    dirty_(false),demo_(false),mouseIn_(false),closeWhenDone_(false),changingCapture_(false),hasClipboard_(false),useRange_(false),snapshotPending_(false),recovered_(false),status_(Ready) {}
+    dirty_(false),demo_(false),mouseIn_(false),closeWhenDone_(false),changingCapture_(false),hasClipboard_(false),useRange_(false),snapshotPending_(false),recovered_(false),assistMode_(false),eco_(false),hasReport_(false),quality_(false),status_(Ready) {}
 App::~App() {
     job_.reset();
-    player_.stop(); preview_.reset();
+    player_.stop(); preview_.reset(); rawPreview_.reset();
     if(back_) {
         if(bmp_) { SelectObject(back_,baseBmp_); DeleteObject(bmp_); }
         DeleteDC(back_);
@@ -72,7 +72,7 @@ App::~App() {
 void App::redraw(bool all) {
     if(all) InvalidateRect(hwnd_,0,FALSE);
     else {
-        InvalidateRect(hwnd_,&ui_.viewer,FALSE);
+        InvalidateRect(hwnd_,source_>=0 && ui_.dual?&ui_.sourcePanel:&ui_.viewer,FALSE);
         InvalidateRect(hwnd_,&ui_.timeline,FALSE);
     }
 }
@@ -81,15 +81,23 @@ void App::updateTitle() {
     SetWindowTextW(hwnd_,title.c_str());
 }
 void App::invalidateFrame() {
-    preview_.reset(); cachedFrame_=-1; cachedSource_=-2; pixels_.clear();
+    preview_.reset(); rawPreview_.reset();
+    cachedFrame_=rawFrame_=-1; rawAsset_=-1;
+    pixels_.clear(); rawPixels_.clear();
 }
 void App::explain(const std::wstring& text,UINT icon) {
     stop();
     MessageBoxW(hwnd_,text.c_str(),L"Nigh Editor",MB_OK|icon);
 }
 bool App::canDemo() const { return exists(join(dir_,L"demo\\Dunas.mp4")); }
+bool App::canAssistDemo() const { return exists(join(dir_,L"demo\\Caderno.mp4")); }
+void App::focusMonitor(bool source) {
+    int selected=source?asset_:-1;
+    if(source_!=selected) { stop(); source_=selected; redraw(); }
+}
 void App::seek(int t,bool show) {
     stop();
+    if(source_>=0 && ui_.dual) InvalidateRect(hwnd_,&ui_.sourcePanel,FALSE);
     source_=-1;
     head_=limit(t,0,length(project_.seq));
     if(show && (head_<first_ || head_>first_+visibleFrames()-2)) first_=limit(head_-visibleFrames()/3,0,maxScroll());
@@ -99,7 +107,7 @@ void App::seekMonitor(int frame) {
     if(source_<0) { seek(frame); return; }
     stop();
     sourceHead_=limit(frame,0,monitorLength());
-    InvalidateRect(hwnd_,&ui_.viewer,FALSE);
+    InvalidateRect(hwnd_,ui_.dual?&ui_.sourcePanel:&ui_.viewer,FALSE);
 }
 void App::play() {
     if(job_) return;
@@ -125,7 +133,7 @@ void App::playbackTick() {
     if(!player_.active()) KillTimer(hwnd_,1);
     if(source_<0 && (head_<first_ || head_>=first_+visibleFrames()-2)) first_=limit(head_-visibleFrames()/5,0,maxScroll());
     if(old!=mark || !player_.active()) {
-        if(source_>=0) InvalidateRect(hwnd_,&ui_.viewer,FALSE);
+        if(source_>=0) InvalidateRect(hwnd_,ui_.dual?&ui_.sourcePanel:&ui_.viewer,FALSE);
         else redraw(false);
     }
 }
@@ -165,6 +173,7 @@ void App::addAsset(int asset,int pos,int before,Lane lane,bool insert) {
     Sequence old=project_.seq;
     Selection s=insert?insertVideo(project_,asset,pos,in,out-in):place(project_,asset,lane,pos,in,out-in,before);
     if(s.index<0) { status_=L"A mídia não cabe nesta faixa ou não tem o tipo necessário."; redraw(); return; }
+    if(asset_!=asset) sourceHead_=0;
     asset_=asset; selected_=s;
     seek(startOf(project_.seq,s));
     commit(std::move(old),L"Clipe em "+std::wstring(laneName(s.lane))+L" • "+a.name);
@@ -172,6 +181,7 @@ void App::addAsset(int asset,int pos,int before,Lane lane,bool insert) {
 void App::resetSource() {
     for(SourceRange& r:sourceRanges_) r=SourceRange();
     hasClipboard_=false; useRange_=false;
+    hasReport_=false; analyzed_=AssistTarget(); report_=AssistReport(); reviewIndex_=-1; sourceHead_=0;
 }
 void App::markSource(bool out) {
     const Asset& a=project_.assets[source_];
@@ -276,7 +286,7 @@ bool App::startJob(std::unique_ptr<Job> job) {
     if(job_) return false;
     stop(); cancelDrag();
     if(scratch_.path.empty()) { explain(L"Não foi possível acessar a pasta temporária deste computador.",MB_ICONWARNING); return false; }
-    if(!codecsPresent(dir_)) {
+    if(job->kind!=AssistJob && !codecsPresent(dir_)) {
         explain(L"ffmpeg.exe e ffprobe.exe são necessários. Extraia o ZIP inteiro e mantenha os três executáveis juntos.",MB_ICONWARNING);
         return false;
     }
@@ -328,11 +338,128 @@ void App::openProject(const std::wstring& path) {
     job->project=std::move(draft);
     startJob(std::move(job));
 }
-void App::showDemo() {
-    if(!canDemo() || !confirmDiscard()) return;
-    std::unique_ptr<Job> job(new Job(DemoJob,dir_,scratch_.path));
-    for(const wchar_t* p:DemoFiles) job->paths.push_back(join(join(dir_,L"demo"),p));
+void App::showDemo(bool assistant) {
+    if(!(assistant?canAssistDemo():canDemo()) || !confirmDiscard()) return;
+    std::unique_ptr<Job> job(new Job(assistant?AssistDemoJob:DemoJob,dir_,scratch_.path));
+    if(assistant) job->paths.push_back(join(dir_,L"demo\\Caderno.mp4"));
+    else for(const wchar_t* p:DemoFiles) job->paths.push_back(join(join(dir_,L"demo"),p));
     startJob(std::move(job));
+}
+void App::workspace(bool assistant) {
+    if(assistMode_!=assistant) {
+        stop(); cancelDrag(); assistMode_=assistant; layout(ui_.w,ui_.h);
+        status_=assistMode_?L"Assistente local • selecione a fonte ou um clipe e analise":L"Montagem • proxies locais";
+    }
+    redraw();
+}
+AssistTarget App::targetForAnalysis() const {
+    AssistTarget target;
+    if(source_<0 && selected_.lane!=Titles) if(const Clip* c=get(project_.seq,selected_)) {
+        target.asset=c->asset; target.first=c->in; target.end=c->in+c->len;
+        target.sequenceStart=startOf(project_.seq,selected_); target.clipLength=c->len; target.clip=selected_;
+        return target;
+    }
+    if(asset_>=0 && asset_<int(project_.assets.size())) {
+        target.asset=asset_;
+        const SourceRange& sr=sourceRanges_[asset_];
+        target.first=std::max(0,sr.first);
+        target.end=sr.last<0?project_.assets[asset_].frames:sr.last;
+    }
+    return target;
+}
+void App::startAnalysis() {
+    workspace(true);
+    AssistTarget target=targetForAnalysis();
+    if(target.asset<0 || target.end<=target.first) {
+        status_=L"Selecione um clipe ou abra uma mídia para analisar"; redraw(); return;
+    }
+    std::unique_ptr<Job> job(new Job(AssistJob,dir_,scratch_.path));
+    job->request=target;
+    job->project.assets=project_.assets; // shares proxies; no video or audio is copied
+    startJob(std::move(job));
+}
+void App::actOnReport(int id) {
+    if(!hasReport_ || analyzed_.asset<0 || analyzed_.asset>=int(project_.assets.size())) return;
+    stop();
+    bool clip=sameTarget(project_,analyzed_);
+    const auto toSequence=[&](int f) { return analyzed_.sequenceStart+f-analyzed_.first; };
+    const auto go=[&](int f) {
+        if(clip) { selected_=analyzed_.clip; seek(toSequence(f)); }
+        else { source_=asset_=analyzed_.asset; seekMonitor(f); }
+    };
+    if(id==CmdAiNext || id==CmdAiPrevious) {
+        int n=int(report_.cues.size());
+        if(n==0) return;
+        reviewIndex_=reviewIndex_<0?(id==CmdAiNext?0:n-1):(reviewIndex_+(id==CmdAiNext?1:n-1))%n;
+        const AssistCue& cue=report_.cues[reviewIndex_];
+        go(cue.frame);
+        status_=(cue.voiceIndex>=0?L"Fala provável • ":L"Corte provável • ")+timecode(cue.frame)+
+            L" na fonte • "+number(reviewIndex_+1)+L" / "+number(n);
+        redraw(); return;
+    }
+    if(id==CmdAiVoice) {
+        if(report_.voice.empty()) return;
+        int voice=reviewIndex_<0?-1:report_.cues[reviewIndex_].voiceIndex;
+        const auto span=voice>=0?report_.voice.begin()+voice:
+            std::max_element(report_.voice.begin(),report_.voice.end(),[](const AssistSpan& a,const AssistSpan& b){return a.end-a.first<b.end-b.first;});
+        source_=asset_=analyzed_.asset;
+        sourceRanges_[asset_].first=span->first; sourceRanges_[asset_].last=span->end;
+        seekMonitor(span->first);
+        status_=L"Trecho falado marcado na fonte • "+timecode(span->first)+L"–"+timecode(span->end)+L". Arraste ou use Inserir.";
+        redraw(); return;
+    }
+    if(!clip) { status_=L"O clipe mudou. Selecione-o na sequência e analise novamente."; redraw(); return; }
+    Sequence previous=project_.seq;
+    Clip* c=get(project_.seq,analyzed_.clip);
+    std::wstring label;
+    if(id==CmdAiMarkers) {
+        int n=0;
+        const auto mark=[&](int f,const wchar_t* text) {
+            int t=toSequence(f);
+            const auto& markers=project_.seq.markers;
+            auto i=std::lower_bound(markers.begin(),markers.end(),t,[](const Marker& m,int k){return m.frame<k;});
+            if((i==markers.end() || i->frame!=t) && putMarker(project_.seq,t,text)) ++n;
+        };
+        for(int f:report_.cuts) mark(f,L"Corte provável");
+        for(const AssistSpan& s:report_.voice) { mark(s.first,L"Início de fala provável"); mark(s.end,L"Fim de fala provável"); }
+        label=n?number(n)+L" marcadores adicionados sem substituir outros":L"Nenhum marcador novo neste trecho";
+    } else if(id==CmdAiSplit) {
+        auto cuts=splitCandidates(project_,analyzed_,report_);
+        if(cuts.empty()) return;
+        if(laneOf(project_.seq,analyzed_.clip.lane).size()+cuts.size()>size_t(MaxClips)) {
+            status_=L"Sem espaço para todos os cortes nesta faixa"; redraw(); return;
+        }
+        std::wstring msg=L"Dividir somente o clipe analisado em "+number(int(cuts.size()))+
+            L" ponto(s) sugeridos? Nenhum quadro será excluído. Você pode desfazer de uma vez.";
+        if(MessageBoxW(hwnd_,msg.c_str(),L"Aplicar cortes sugeridos",MB_OKCANCEL|MB_ICONQUESTION)!=IDOK) return;
+        for(auto it=cuts.rbegin();it!=cuts.rend();++it) if(!split(project_.seq,analyzed_.clip,*it)) {
+            project_.seq=std::move(previous); redraw(); return;
+        }
+        selected_=at(project_.seq,analyzed_.clip.lane,cuts.front());
+        seek(cuts.front());
+        label=number(int(cuts.size()))+L" cortes aplicados ao clipe • Ctrl+Z desfaz o lote";
+    } else if(id==CmdAiFace && report_.face.size && analyzed_.clip.lane==Video) {
+        frameFace(c->fx,project_.seq.format,report_.face);
+        go(report_.faceFrame);
+        label=L"Reenquadramento estático proposto aplicado • revise no monitor de programa";
+    } else if(id==CmdAiTune) {
+        if(report_.videoFrames && (analyzed_.clip.lane==Video || analyzed_.clip.lane==Overlay) && report_.brightness) c->fx.brightness=report_.brightness;
+        if(report_.gain>=0 && analyzed_.clip.lane!=Overlay) c->gain=report_.gain;
+        label=L"Sugestão de brilho e/ou volume aplicada a este clipe";
+    } else return;
+    status_=label;
+    commit(std::move(previous),label);
+}
+void App::useFormat(FrameFormat format) {
+    stop();
+    Sequence old=project_.seq;
+    project_.seq.format=format;
+    commit(std::move(old),L"Formato da sequência • "+std::wstring(formatName(format)));
+}
+void App::exportQuality(int quality) {
+    FrameSize sz=outputSize(project_.seq.format,quality);
+    RenderPreset preset(sz.w,sz.h); preset.detailed=quality_;
+    exportTo(preset);
 }
 void App::importFiles(std::vector<std::wstring> paths) {
     if(job_) return;
@@ -387,6 +514,10 @@ void App::pollJob() {
     else if(!job->success) {
         status_=L"Não foi possível concluir a operação";
         explain(job->error.empty()?status_:job->error,MB_ICONWARNING);
+    } else if(job->kind==AssistJob) {
+        analyzed_=job->request;
+        report_=std::move(job->analysis); hasReport_=true; reviewIndex_=-1;
+        status_=report_.limited?L"Primeiros 90 s analisados • marque In/Out para outro trecho":L"Sugestões prontas • nenhum corte foi aplicado";
     } else if(job->kind==ExportJob) {
         status_=L"Exportado • "+baseName(job->target);
         int see=MessageBoxW(hwnd_,(L"Arquivo criado em:\n\n"+job->target+L"\n\nAbrir a pasta da exportação?").c_str(),
@@ -396,8 +527,8 @@ void App::pollJob() {
         int newIndex=int(project_.assets.size());
         int count=int(job->project.assets.size());
         for(Asset& a:job->project.assets) project_.assets.push_back(std::move(a));
-        asset_=newIndex;
-        if(project_.seq.video.empty()) { source_=asset_; sourceHead_=0; }
+        asset_=newIndex; sourceHead_=0;
+        if(source_>=0 || project_.seq.video.empty()) source_=asset_;
         assetScroll_=limit(asset_-ui_.rows+1,0,std::max(0,int(project_.assets.size())-ui_.rows));
         dirty_=snapshotPending_=true; updateTitle();
         status_=number(count)+(count==1?L" mídia importada":L" mídias importadas")+L" • use + para adicionar à linha do tempo";
@@ -408,15 +539,18 @@ void App::pollJob() {
         project_=std::move(job->project); clearHistory();
         selected_=project_.seq.video.empty()?Selection():Selection(Video,0);
         source_=-1; asset_=project_.assets.empty()?-1:0;
-        zoom_=first_=assetScroll_=0; demo_=job->kind==DemoJob;
+        bool aiDemo=job->kind==AssistDemoJob;
+        zoom_=first_=assetScroll_=0; demo_=job->kind==DemoJob || aiDemo;
         dirty_=snapshotPending_=job->openedWithChanges;
         recovered_=!job->target.empty();
         useRange_=project_.seq.workIn>=0 || project_.seq.workOut>=0;
-        head_=demo_?std::min(144,length(project_.seq)):0;
+        head_=demo_?std::min(aiDemo?30:144,length(project_.seq)):0;
         if(demo_ && !project_.seq.overlay.empty()) selected_=Selection(Overlay,0);
-        status_=demo_?L"Maré baixa • títulos, transição, sobreposição e mixagem":
+        status_=aiDemo?L"Caderno de campo • rosto, cortes e duas falas prováveis":
+            demo_?L"Maré baixa • títulos, transição, sobreposição e mixagem":
             dirty_?L"Projeto recuperado ou mídia religada • salve as alterações":L"Projeto aberto • proxies recriados";
         updateTitle();
+        if(aiDemo) startAnalysis();
     }
     redraw();
 }
@@ -435,22 +569,55 @@ void App::menu(int id,int x,int y) {
         AppendMenuW(m,MF_SEPARATOR,0,0);
         addItem(CmdImport,L"&Importar mídia…\tCtrl+I");
         if(canDemo()) addItem(CmdDemo,L"Abrir &demonstração");
+        if(canAssistDemo()) addItem(CmdAssistDemo,L"Demonstração do assistente local");
         AppendMenuW(m,MF_SEPARATOR,0,0);
         addItem(CmdHelp,L"&Atalhos e ajuda\tF1");
         addItem(CmdExit,L"Sai&r");
     } else if(id==CmdExport) {
-        addItem(CmdExport360,L"MP4 &360p leve     640 × 360");
-        addItem(CmdExport480,L"MP4 &480p             854 × 480");
-        addItem(CmdExport720,L"MP4 &720p HD      1280 × 720 (mais lento)");
+        const int cmds[]={CmdExport360,CmdExport480,CmdExport720};
+        const wchar_t* labels[]={L"MP4 &leve",L"MP4 &SD",L"MP4 &HD (mais lento)"};
+        for(int i=0;i<3;++i) {
+            FrameSize sz=outputSize(project_.seq.format,i);
+            std::wstring label=std::wstring(labels[i])+L"   "+number(sz.w)+L" × "+number(sz.h);
+            addItem(cmds[i],label.c_str());
+        }
         addItem(CmdExportWav,L"&WAV estéreo       Som da sequência");
         AppendMenuW(m,MF_SEPARATOR,0,0);
+        addItem(CmdQuality,L"Qualidade detalhada (mais lenta)",true,quality_);
         addItem(CmdUseRange,L"Exportar somente intervalo In / Out",project_.seq.workIn>=0 || project_.seq.workOut>=0,useRange_);
+    } else if(id==CmdFormat) {
+        addItem(CmdFormatWide,L"Horizontal   16:9",true,project_.seq.format==FrameWide);
+        addItem(CmdFormatSquare,L"Quadrado   1:1",true,project_.seq.format==FrameSquare);
+        addItem(CmdFormatTall,L"Vertical   9:16",true,project_.seq.format==FrameTall);
+    } else if(id==CmdAiReview) {
+        const auto& r=report_;
+        bool mapped=hasReport_ && sameTarget(project_,analyzed_);
+        bool events=hasReport_ && !r.cues.empty();
+        bool pic=analyzed_.clip.lane==Video || analyzed_.clip.lane==Overlay;
+        addItem(CmdAiNext,L"&Próxima sugestão no monitor\tF6",events);
+        addItem(CmdAiPrevious,L"&Anterior\tShift+F6",events);
+        AppendMenuW(m,MF_SEPARATOR,0,0);
+        addItem(CmdAiMarkers,L"&Marcar cortes e falas na sequência",mapped && events);
+        addItem(CmdAiSplit,L"&Dividir clipe nos cortes sugeridos…",mapped && pic && !splitCandidates(project_,analyzed_,r).empty());
+        bool reviewingVoice=reviewIndex_>=0 && r.cues[reviewIndex_].voiceIndex>=0;
+        addItem(CmdAiVoice,reviewingVoice?L"Usar a fala em revisão como trecho de &fonte":L"Usar a fala mais longa como trecho de &fonte",hasReport_ && !r.voice.empty());
+        addItem(CmdAiFace,L"&Reenquadrar V1 pelo rosto (estático)\tF7",mapped && analyzed_.clip.lane==Video && r.face.size>0);
+        std::wstring tune=L"&Aplicar ajuste leve";
+        if(r.brightness && pic) tune+=L" · brilho "+std::wstring(r.brightness>0?L"+":L"")+number(r.brightness);
+        if(r.gain>=0 && analyzed_.clip.lane!=Overlay) tune+=L" · volume "+number(r.gain)+L"%";
+        addItem(CmdAiTune,tune.c_str(),mapped && ((pic && r.brightness) || (r.gain>=0 && analyzed_.clip.lane!=Overlay)));
+        AppendMenuW(m,MF_SEPARATOR,0,0);
+        addItem(CmdAnalyze,L"Analisar seleção atual\tF4",targetForAnalysis().asset>=0);
+        addItem(CmdAssistDemo,L"Abrir demo de análise",canAssistDemo());
     } else {
         const Clip* c=get(project_.seq,selected_);
         const Asset* a=asset_>=0?&project_.assets[asset_]:0;
         addItem(CmdProps,L"&Propriedades do clipe…\tF2",c!=0);
         addItem(CmdTitle,L"Novo &título ou legenda…\tT",head_<MaxFrames);
         addItem(CmdMarker,L"&Marcador no cursor…\tM");
+        addItem(CmdFormatWide,L"Sequência horizontal   16:9",true,project_.seq.format==FrameWide);
+        addItem(CmdFormatSquare,L"Sequência quadrada   1:1",true,project_.seq.format==FrameSquare);
+        addItem(CmdFormatTall,L"Sequência vertical   9:16",true,project_.seq.format==FrameTall);
         AppendMenuW(m,MF_SEPARATOR,0,0);
         addItem(CmdInsert,L"&Inserir fonte em V1 no cursor\t,",a && a->video>=0);
         addItem(CmdAddOverlay,L"Enviar fonte para &V2",a && a->video>=0);
@@ -475,7 +642,7 @@ void App::execute(int id) {
     if(job_ && id!=CmdCancel && id!=CmdHelp) return;
     if(id>=CmdAssetBase) { addAsset(id-CmdAssetBase,head_); return; }
     switch(id) {
-    case CmdFile: case CmdExport: case CmdTools:
+    case CmdFile: case CmdExport: case CmdTools: case CmdFormat: case CmdAiReview:
         if(id!=CmdExport || length(project_.seq)) menu(id);
         return;
     case CmdNew:newProject();return;
@@ -483,10 +650,26 @@ void App::execute(int id) {
     case CmdSave:save(false);return;
     case CmdSaveAs:save(true);return;
     case CmdDemo:showDemo();return;
-    case CmdExport360:exportTo(RenderPreset());return;
-    case CmdExport480:exportTo(RenderPreset(854,480));return;
-    case CmdExport720:exportTo(RenderPreset(1280,720));return;
+    case CmdAssistDemo:showDemo(true);return;
+    case CmdWorkspaceEdit:workspace(false);return;
+    case CmdWorkspaceAssist:workspace(true);return;
+    case CmdEco:
+        stop(); cancelDrag(); eco_=!eco_; layout(ui_.w,ui_.h);
+        status_=eco_?L"Modo Eco • um monitor, prévia de 6 qps durante a reprodução":L"Prévia normal • 12 qps";
+        redraw();return;
+    case CmdFormatWide:useFormat(FrameWide);return;
+    case CmdFormatSquare:useFormat(FrameSquare);return;
+    case CmdFormatTall:useFormat(FrameTall);return;
+    case CmdAnalyze:startAnalysis();return;
+    case CmdAiNext:case CmdAiPrevious:case CmdAiMarkers:case CmdAiSplit:case CmdAiFace:case CmdAiVoice:case CmdAiTune:
+        actOnReport(id);return;
+    case CmdExport360:exportQuality(0);return;
+    case CmdExport480:exportQuality(1);return;
+    case CmdExport720:exportQuality(2);return;
     case CmdExportWav: { RenderPreset wav; wav.audioOnly=true; exportTo(wav); return; }
+    case CmdQuality:quality_=!quality_;
+        status_=quality_?L"Exportação MP4 • qualidade detalhada, mais lenta":L"Exportação MP4 • codificação leve";
+        redraw();return;
     case CmdUseRange:if(project_.seq.workIn>=0 || project_.seq.workOut>=0) {
         useRange_=!useRange_;
         status_=useRange_?L"Exportação: somente o intervalo In / Out":L"Exportação: sequência inteira";
@@ -508,11 +691,16 @@ void App::execute(int id) {
             L"Alt+I / O / X     Marcar entrada, saída ou limpar intervalo de exportação\n"
             L"Ctrl+C / V / D     Copiar / colar / duplicar clipe\n"
             L"Ctrl+Z / Y     Desfazer / refazer; Ctrl+roda para zoom; Shift ignora encaixe\n"
+            L"F3 / F4 / F5     Assistente, analisar e menu de sugestões\n"
+            L"F6 / F7 / F8     Próxima sugestão, reenquadrar V1 e modo Eco\n"
             L"Ctrl+I / S / O / E     Importar / salvar / abrir / exportar"); return;
     case CmdExit: PostMessageW(hwnd_,WM_CLOSE,0,0);return;
     case CmdCancel: if(job_) { job_->cancel(); progress_.label=L"Cancelando…"; redraw(); } return;
     case CmdPlay:play();return;
-    case CmdVideoMode:stop();source_=-1;redraw();return;
+    case CmdPlaySource:if(asset_>=0) { focusMonitor(true); play(); }return;
+    case CmdPlayProgram:focusMonitor(false);play();return;
+    case CmdVideoMode:focusMonitor(false);return;
+    case CmdSourceMode:if(asset_>=0) focusMonitor(true);return;
     case CmdFirst:seekMonitor(0);return;
     case CmdLast:seekMonitor(monitorLength());return;
     case CmdPrev:seekMonitor(monitorHead()-1);return;
@@ -659,6 +847,12 @@ bool App::shortcut(WPARAM key,LPARAM flags) {
     case VK_LEFT:execute(CmdPrev);return true;
     case VK_RIGHT:execute(CmdNext);return true;
     case VK_F2:execute(CmdProps);return true;
+    case VK_F3:workspace(!assistMode_);return true;
+    case VK_F4:startAnalysis();return true;
+    case VK_F5:if(assistMode_) execute(CmdAiReview);return true;
+    case VK_F6:execute(shift()?CmdAiPrevious:CmdAiNext);return true;
+    case VK_F7:execute(CmdAiFace);return true;
+    case VK_F8:execute(CmdEco);return true;
     case VK_PRIOR:execute(CmdMarkPrev);return true;
     case VK_NEXT:execute(CmdMarkNext);return true;
     case VK_OEM_COMMA:execute(CmdInsert);return true;
@@ -750,9 +944,15 @@ void App::mouseDown(int x,int y,bool dbl) {
         drag_.off=inside(thumb,x,y)?x-thumb.left:width(thumb)/2;
         scrollToPointer(x,drag_.off); return;
     }
+    if(!dbl && ui_.dual && inside(ui_.sourceSeek,x,y) && asset_>=0) {
+        focusMonitor(true); track(MonitorSeek,x,y); seekMonitor(monitorFrame(x)); return;
+    }
     if(!dbl && inside(ui_.transportSeek,x,y)) {
+        if(ui_.dual) focusMonitor(false);
         track(MonitorSeek,x,y); seekMonitor(monitorFrame(x)); return;
     }
+    if(!dbl && ui_.dual && inside(ui_.sourceDisplay,x,y) && asset_>=0) { focusMonitor(true); return; }
+    if(!dbl && ui_.dual && inside(ui_.display,x,y)) { focusMonitor(false); return; }
     if(!dbl && inside(ui_.ruler,x,y)) { track(Scrub,x,y); seek(frameAt(x),false);return; }
     int row=rowAt(x,y);
     if(row>=0) {
@@ -909,6 +1109,7 @@ void App::openArgs() {
     if(count>1) {
         std::wstring arg=args[1];
         if(arg==L"--demo") showDemo();
+        else if(arg==L"--assist-demo") showDemo(true);
         else if(projectPath(arg)) openProject(fullPath(arg));
         else if(!arg.empty() && arg[0]!=L'-') {
             std::vector<std::wstring> paths;

@@ -107,5 +107,14 @@ int main() {
     assert(trim(still,Selection(Video,0),false,121) && valid(still,true));
     assert(split(still.seq,Selection(Video,0),100) && trim(still,Selection(Video,1),true,-12));
     assert(valid(still,true) && length(still.seq)==233);
+    assert(outputSize(FrameWide,0).w==640 && outputSize(FrameTall,0).h==640);
+    assert(outputSize(FrameTall,1).w==480 && outputSize(FrameTall,1).h==854);
+    assert(outputSize(FrameSquare,2).w==720 && previewWidth(FrameTall)==102);
+    PictureBox crop=outputBox(Effects(),102,180,FrameTall);
+    assert(crop.w==320 && crop.h==180 && crop.x==-108 && crop.y==0);
+    Sequence formatted;
+    assert(formatted==Sequence());
+    formatted.format=FrameTall;
+    assert(!(formatted==Sequence()));
     std::cout<<"Core: ripple edits, six rows, titles, markers, export spans and model limits OK\n";
 }

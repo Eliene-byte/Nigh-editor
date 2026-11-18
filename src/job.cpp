@@ -31,6 +31,7 @@ JobProgress Job::progress() {
 }
 unsigned __stdcall Job::worker(void* data) {
     Job* job=static_cast<Job*>(data);
+    if(job->kind==AssistJob) SetThreadPriority(GetCurrentThread(),THREAD_PRIORITY_BELOW_NORMAL);
     try { job->work(); }
     catch(...) { job->error=L"Não foi possível completar a operação. Verifique a memória e o espaço em disco."; job->success=false; }
     return 0;
@@ -42,6 +43,11 @@ void Job::work() {
         progress_=JobProgress(p,label);
     };
     if(kind==ExportJob) { success=render(ctx,project,target,preset,error); return; }
+    if(kind==AssistJob) {
+        if(request.asset>=0 && request.asset<int(project.assets.size()))
+            success=analyze(ctx,project.assets[request.asset],request.first,request.end,analysis,error);
+        return;
+    }
     if(kind==OpenJob) {
         for(const Asset& a:project.assets) paths.push_back(a.path);
         project.assets.clear();
@@ -76,6 +82,11 @@ void Job::work() {
         putMarker(project.seq,0,L"Abertura");
         putMarker(project.seq,104,L"Dissolução");
         putMarker(project.seq,121,L"Sobreposição");
+    }
+    if(kind==AssistDemoJob) {
+        project.name=L"Caderno de campo";
+        add(project,0,0);
+        project.seq.format=FrameTall;
     }
     if(kind!=ImportJob && !valid(project,true)) {
         error=L"A duração ou o tipo de um arquivo original mudou. O projeto não foi alterado.";

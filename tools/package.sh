@@ -16,9 +16,14 @@ name='Nigh Editor'
 portable="$stage/$name"
 license="$portable/Licencas"
 code="$license/Codigo-fonte-dos-codecs"
-mkdir -p "$portable/demo" "$code/tools"
+mkdir -p "$portable/demo" "$portable/models" "$code/tools"
 cp "$bin/NighEditor.exe" "$bin/codecs/ffmpeg.exe" "$bin/codecs/ffprobe.exe" "$portable/"
-cp demo/*.mp4 demo/*.m4a "$portable/demo/"
+cp demo/*.mp4 demo/*.m4a demo/CREDITOS.txt "$portable/demo/"
+printf '%s  %s\n' d8014993e7298c7b1865d1f8b855d6dbf4ec5c808bf879e2091ab6837abf90cd models/facefinder.bin | sha256sum -c -
+cp models/facefinder.bin "$portable/models/"
+cp models/LICENSE-Pico.txt "$license/Pico-MIT.txt"
+cp src/vendor/vad/LICENSE "$license/WebRTC-VAD.txt"
+cp models/README.md "$license/Modelos-locais.md"
 cp tools/build-codecs.sh tools/codec-sources.sha256 "$code/tools/"
 cp "$source_dir/ffmpeg-4.4.8.tar.gz" "$source_dir/x264-31e19f9.tar.gz" "$code/"
 tar xOf "$code/ffmpeg-4.4.8.tar.gz" FFmpeg-n4.4.8/COPYING.GPLv2 > "$license/FFmpeg-GPLv2.txt"
@@ -45,13 +50,17 @@ https://github.com/mirror/x264/tree/31e19f92f00c7003fa115047ce50978bc98c3a0d
 A decodificação das prévias no Nigh Editor usa stb_image (Sean Barrett e
 contribuidores; licença MIT/domínio público). Leia stb_image.txt.
 https://github.com/nothings/stb
+
+Os modelos locais incluem o detector Pico (Nenad Markuš, MIT), o
+WebRTC VAD (BSD, de py-webrtcvad 2.0.10) e um classificador de cortes
+próprio do Nigh. Consulte Pico-MIT.txt, WebRTC-VAD.txt e Modelos-locais.md.
 NOTICE
 python3 - "$portable/LEIA-ME.txt" <<'PY'
 import pathlib, sys
 text = pathlib.Path('tools/LEIA-ME.txt').read_text(encoding='utf-8')
 pathlib.Path(sys.argv[1]).write_bytes(('\ufeff'+text.replace('\n','\r\n')).encode('utf-8'))
 PY
-bundle='Nigh-Editor-0.2.0-Windows-x86.zip'
+bundle='Nigh-Editor-0.3.0-Windows-x86.zip'
 (cd "$stage" && zip -q -9 -r "$stage/$bundle" "$name")
 mv -f -- "$stage/$bundle" "$artifact_dir/$bundle"
 (cd "$artifact_dir" && sha256sum "$bundle" > "$bundle.sha256")

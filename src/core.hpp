@@ -72,12 +72,19 @@ struct Marker {
     Marker(int f,const std::wstring& s) : frame(f),text(s) {}
     bool operator==(const Marker& m) const { return frame==m.frame && text==m.text; }
 };
+enum FrameFormat { FrameWide=0, FrameSquare, FrameTall, FrameFormats };
+struct FrameSize { int w,h; };
+FrameSize outputSize(FrameFormat format,int quality); // 0 = SD, 1 = 480p, 2 = HD
+int previewWidth(FrameFormat format);
+const wchar_t* formatName(FrameFormat format);
+
 struct Sequence {
     std::vector<Clip> video, music, overlay, voice, titles;
     std::vector<Marker> markers;
     bool muteA1, muteA2, muteA3, hideV2;
+    FrameFormat format;
     int workIn, workOut; // half-open boundaries, -1 = unset
-    Sequence() : muteA1(false),muteA2(false),muteA3(false),hideV2(false),workIn(-1),workOut(-1) {}
+    Sequence() : muteA1(false),muteA2(false),muteA3(false),hideV2(false),format(FrameWide),workIn(-1),workOut(-1) {}
     bool operator==(const Sequence& seq) const;
 };
 struct Project {
@@ -120,6 +127,7 @@ Scene sceneAt(const Sequence& seq,int frame);
 std::vector<int> sceneCuts(const Sequence& seq,int first,int end);
 struct PictureBox { int x,y,w,h; };
 PictureBox pictureBox(const Effects& fx,int width,int height);
+PictureBox outputBox(const Effects& fx,int width,int height,FrameFormat format);
 
 std::wstring timecode(int frame);
 std::wstring number(int value);

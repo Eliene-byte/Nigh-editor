@@ -1,5 +1,7 @@
 #include "comp.hpp"
+#include "assist.hpp"
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 using namespace nigh;
@@ -145,8 +147,83 @@ static bool composition(const MediaContext& ctx,const Asset& ambience,const std:
     if(paste(onlyTitle.seq,Titles,t,0).index!=0 || !render(ctx,onlyTitle,join(out,L"Cartela.mp4"),RenderPreset(),why)) return false;
     return true;
 }
+static bool checkAssistant(const MediaContext& ctx,const std::wstring& demo,const std::wstring& out,std::wstring& why) {
+    Asset a;
+    if(!importMedia(ctx,join(demo,L"Caderno.mp4"),a,why)) return false;
+    AssistReport r;
+    DWORD begin=GetTickCount();
+    if(!analyze(ctx,a,0,a.frames,r,why)) return false;
+    print(L"Tempo de análise, sem importação: "+number(int(GetTickCount()-begin))+L" ms neste ambiente");
+    print(L"Assistente: "+number(int(r.cuts.size()))+L" cortes, "+number(int(r.voice.size()))+L" falas, rosto "+number(r.faceVotes)+
+        L" / "+number(r.faceChecks)+L", volume "+number(r.gain)+L"%");
+    for(int f:r.cuts) print(L"Corte sugerido em "+number(f));
+    for(const AssistSpan& s:r.voice) print(L"Fala sugerida: "+number(s.first)+L"–"+number(s.end));
+    if(r.end!=216 || r.cues.size()!=4 || r.cues[0].voiceIndex!=0 || r.cues[1].voiceIndex!=-1 || r.faceFrame<0 || r.limited || r.videoFrames<100 || r.cuts.size()!=2 || std::abs(r.cuts[0]-84)>2 || std::abs(r.cuts[1]-122)>2 ||
+        !r.hasVoice || r.voice.size()!=2 || r.voice[0].end>=84 || r.voice[1].first<117 ||
+        !r.faceModel || r.face.size<24 || r.face.x<192 || r.face.x>256 || r.gain<50 || r.gain>150) {
+        why=L"Os detectores não encontraram o comportamento esperado na demo Caderno."; return false;
+    }
+    Project p;
+    p.assets.push_back(a);
+    if(add(p,0,0).index!=0) return false;
+    AssistTarget t;
+    t.asset=0; t.first=0; t.end=a.frames; t.clipLength=a.frames; t.clip=Selection(Video,0); t.sequenceStart=0;
+    if(!sameTarget(p,t) || splitCandidates(p,t,r)!=r.cuts) return false;
+    // Cuts preserve content and duration. Exclude suggestions inside a dissolve or audio fade.
+    p.seq.video[0].fx.fadeOut=100;
+    if(splitCandidates(p,t,r)!=std::vector<int>{r.cuts[0]}) return false;
+    p.seq.video[0].fx.fadeOut=0;
+    Sequence divided=p.seq;
+    for(auto it=r.cuts.rbegin();it!=r.cuts.rend();++it) if(!split(divided,t.clip,*it)) return false;
+    if(divided.video.size()!=3 || divided.video[1].in!=r.cuts[0] || divided.video[2].in!=r.cuts[1] || length(divided)!=216) return false;
+    p.seq.format=FrameTall;
+    Preview preview;
+    std::vector<uint8_t> picture;
+    if(!preview.frame(p,36,-1,picture) || picture.size()!=102u*180u*4u) return false;
+    auto original=picture;
+    Effects& fx=p.seq.video[0].fx;
+    frameFace(fx,p.seq.format,r.face);
+    if(fx.x>=0 || fx.scale!=100 || !preview.frame(p,36,-1,picture) || picture==original) return false;
+    PictureBox box=outputBox(fx,102,180,FrameTall);
+    if(std::abs(box.x+r.face.x-51)>4) { why=L"O crop vertical não centralizou o rosto."; return false; }
+    std::wstring proj=join(out,L"Vertical.nigh");
+    Project q;
+    if(!saveProject(p,proj) || !readProject(proj,q,why) || !(p.seq==q.seq)) return false;
+    FrameSize dims=outputSize(p.seq.format,0);
+    RenderPreset portrait(dims.w,dims.h);
+    portrait.first=12; portrait.last=60; portrait.detailed=true;
+    std::wstring output=join(out,L"Vertical assistido.mp4");
+    if(!render(ctx,p,output,portrait,why) || File(output).size()<10000) return false;
+    Asset exported;
+    AssistReport cropped;
+    if(!importMedia(ctx,output,exported,why) || exported.frames!=48 || !analyze(ctx,exported,0,exported.frames,cropped,why) ||
+        cropped.face.size==0 || std::abs(cropped.face.x-ProxyW/2)>6) {
+        why=L"As imagens exportadas não conferem com o centro sugerido: "+why; return false;
+    }
+    AssistReport bounded;
+    if(!analyze(ctx,a,24,78,bounded,why) || bounded.first!=24 || bounded.end!=78 || !bounded.cuts.empty()) return false;
+    for(const AssistSpan& voice:bounded.voice) if(voice.first<24 || voice.end>78) return false;
+    if(!trim(p,Selection(Video,0),false,72) || sameTarget(p,t) || !splitCandidates(p,t,r).empty()) return false;
+    // Cancel must not replace the previous report or apply an edit.
+    HANDLE cancel=CreateEventW(0,TRUE,FALSE,0);
+    if(!cancel) return false;
+    MediaContext stopped(ctx.tools,ctx.scratch,cancel);
+    stopped.progress=[cancel](int,const std::wstring&) { SetEvent(cancel); };
+    bool analyzed=analyze(stopped,a,0,a.frames,r,why);
+    CloseHandle(cancel);
+    return !analyzed && r.cuts.size()==2;
+}
+static bool versionTwo(const Project& from,const std::wstring& dir) {
+    std::wstring v3=join(dir,L"Projeto atual.nigh"), v2=join(dir,L"Projeto v2.nigh"), why;
+    if(!saveProject(from,v3)) return false;
+    std::string data=readText(v3,100000);
+    if(data.size()<12 || data.compare(0,8,"NIGHED3\n")) return false;
+    data[6]='2'; data.resize(data.size()-4);
+    Project p;
+    return putText(v2,data) && readProject(v2,p,why) && p.seq==from.seq && p.seq.format==FrameWide;
+}
 extern "C" int wmain(int argc,wchar_t** argv) {
-    if(argc!=4) return fail(L"Uso: smoke.exe pasta_codecs pasta_demo pasta_saída");
+    if(argc!=4) return fail(L"Uso: smoke.exe pasta_portatil pasta_demo pasta_saída");
     const std::wstring tools=fullPath(argv[1]), demo=fullPath(argv[2]), out=fullPath(argv[3]);
     TempDir cache;
     if(!codecsPresent(tools) || cache.path.empty()) return fail(L"Motor ou pasta de teste não disponível");
@@ -180,6 +257,7 @@ extern "C" int wmain(int argc,wchar_t** argv) {
     Project reopened;
     if(!saveProject(p,project) || !readProject(project,reopened,why) || !(p.seq==reopened.seq) ||
         p.assets.size()!=reopened.assets.size() || !equalPath(reopened.assets[0].path,p.assets[0].path)) return fail(L"Salvar e reabrir projeto");
+    if(!versionTwo(p,out)) return fail(L"Compatibilidade de arquivos v0.2");
     // Real stereo data is read and muted according to the active tracks.
     {
         Mixer mixer;
@@ -206,6 +284,7 @@ extern "C" int wmain(int argc,wchar_t** argv) {
         return fail(L"Duração ou cores do MP4 redimensionado: "+why);
     if(!audioEnvelope(out)) return fail(L"Fade e pan estéreo com fonte PCM conhecida");
     if(!composition(ctx,p.assets[3],out,why)) return fail(L"Composição multifaixa: "+why);
+    if(!checkAssistant(ctx,demo,out,why)) return fail(L"Assistente e exportação vertical: "+why);
     Asset corrupt;
     if(!putText(join(out,L"inválido.mp4"),"not a movie") || importMedia(ctx,join(out,L"inválido.mp4"),corrupt,why))
         return fail(L"Rejeição de mídia inválida");

@@ -74,22 +74,22 @@ const std::vector<uint8_t>* Preview::Cached::read(const Asset& a,int t) {
 void Preview::reset() {
     base_.reset(); previous_.reset(); overlay_.reset(); title_.clear(); temp_.clear();
 }
-static const int Bytes=ProxyW*ProxyH*4;
 static void alphaOver(std::vector<uint8_t>& out,const std::vector<uint8_t>& src) {
-    for(int i=0;i<Bytes;i+=4) {
+    for(size_t i=0;i<out.size();i+=4) {
         int a=src[i+3];
         if(a) for(int k=0;k<3;++k) out[i+k]=uint8_t((out[i+k]*(255-a)+src[i+k]*a+127)/255);
     }
 }
-static void drawLayer(std::vector<uint8_t>& out,const std::vector<uint8_t>* src,bool still,const Effects& e,bool replace) {
-    if(replace && src && !still && e.scale==100 && !e.x && !e.y && e.opacity==100 && !e.color()) {
+static void drawLayer(std::vector<uint8_t>& out,const std::vector<uint8_t>* src,bool still,const Effects& e,bool replace,FrameFormat format) {
+    int width=previewWidth(format);
+    if(format==FrameWide && replace && src && !still && e.scale==100 && !e.x && !e.y && e.opacity==100 && !e.color()) {
         out=*src;
         return;
     }
-    if(replace) out.assign(Bytes,0);
+    if(replace) out.assign(width*ProxyH*4,0);
     if(!src || !e.opacity) return;
-    PictureBox b=pictureBox(e,ProxyW,ProxyH);
-    int left=std::max(0,b.x),top=std::max(0,b.y),right=std::min(ProxyW,b.x+b.w),bottom=std::min(ProxyH,b.y+b.h);
+    PictureBox b=outputBox(e,width,ProxyH,format);
+    int left=std::max(0,b.x),top=std::max(0,b.y),right=std::min(width,b.x+b.w),bottom=std::min(ProxyH,b.y+b.h);
     if(left>=right || top>=bottom) return;
     int columns[ProxyW], matrix[3][3];
     uint8_t lut[256];
@@ -101,7 +101,7 @@ static void drawLayer(std::vector<uint8_t>& out,const std::vector<uint8_t>* src,
     }
     for(int y=top;y<bottom;++y) {
         const uint8_t* row=src->data()+(y-b.y)*ProxyH/b.h*ProxyW*4;
-        uint8_t* dest=out.data()+(y*ProxyW+left)*4;
+        uint8_t* dest=out.data()+(y*width+left)*4;
         for(int x=left;x<right;++x,dest+=4) {
             const uint8_t* p=row+columns[x];
             int a=still?p[3]*e.opacity/100:255*e.opacity/100;
@@ -122,29 +122,32 @@ bool Preview::frame(const Project& p,int t,int source,std::vector<uint8_t>& pixe
         const Asset& a=p.assets[source];
         auto src=base_.read(a,t);
         if(!src) return false;
-        drawLayer(pixels,src,a.still,Effects(),true);
+        drawLayer(pixels,src,a.still,Effects(),true,FrameWide);
         return true;
     }
     if(length(p.seq)==0) return false;
+    FrameFormat format=p.seq.format;
+    int width=previewWidth(format);
     Scene scene=sceneAt(p.seq,t);
     const auto draw=[&](const Clip* c,int f,Cached& cache,std::vector<uint8_t>& out,bool base) {
-        if(!c) { if(base) out.assign(Bytes,0); return; }
+        if(!c) { if(base) out.assign(width*ProxyH*4,0); return; }
         const Asset& a=p.assets[c->asset];
-        drawLayer(out,cache.read(a,std::min(a.frames-1,f)),a.still,c->fx,base);
+        drawLayer(out,cache.read(a,std::min(a.frames-1,f)),a.still,c->fx,base,format);
     };
     draw(scene.main,scene.main?scene.main->in+scene.mainOffset:0,base_,pixels,true);
     if(scene.dissolve && scene.mainOffset<scene.dissolve-1) {
         const Clip* a=scene.previous;
         draw(a,a?a->in+a->len+scene.mainOffset:0,previous_,temp_,true);
         int alpha=scene.mainOffset*256/(scene.dissolve-1);
-        for(int i=0;i<Bytes;i+=4) for(int k=0;k<3;++k)
+        for(size_t i=0;i<pixels.size();i+=4) for(int k=0;k<3;++k)
             pixels[i+k]=uint8_t((pixels[i+k]*alpha+temp_[i+k]*(256-alpha)+128)>>8);
     }
     draw(scene.overlay,scene.overlay?scene.overlay->in+scene.overlayOffset:0,overlay_,pixels,false);
     if(scene.title) {
-        if(title_.empty() || !(lastTitle_==scene.title->title)) {
+        if(title_.empty() || titleWidth_!=width || !(lastTitle_==scene.title->title)) {
             lastTitle_=scene.title->title;
-            if(!rasterTitle(lastTitle_,ProxyW,ProxyH,title_)) title_.clear();
+            titleWidth_=width;
+            if(!rasterTitle(lastTitle_,width,ProxyH,title_)) title_.clear();
         }
         if(!title_.empty()) alphaOver(pixels,title_);
     }

@@ -12,7 +12,7 @@ bool Clip::operator==(const Clip& c) const {
     return asset==c.asset && in==c.in && len==c.len && pos==c.pos && gain==c.gain && fx==c.fx && title==c.title;
 }
 bool Sequence::operator==(const Sequence& s) const {
-    return muteA1==s.muteA1 && muteA2==s.muteA2 && muteA3==s.muteA3 && hideV2==s.hideV2 && workIn==s.workIn && workOut==s.workOut &&
+    return muteA1==s.muteA1 && muteA2==s.muteA2 && muteA3==s.muteA3 && hideV2==s.hideV2 && format==s.format && workIn==s.workIn && workOut==s.workOut &&
         video==s.video && music==s.music && overlay==s.overlay && voice==s.voice && titles==s.titles && markers==s.markers;
 }
 std::vector<Clip>& laneOf(Sequence& s,Lane l) {
@@ -244,9 +244,17 @@ static bool goodEffects(const Effects& e) {
         inRange(e.dissolve,0,MaxDissolve) && e.dissolve!=1 && inRange(e.pan,-100,100) &&
         inRange(e.fadeIn,0,MaxFade) && inRange(e.fadeOut,0,MaxFade);
 }
+FrameSize outputSize(FrameFormat format,int quality) {
+    const int shortSide[]={360,480,720}, longSide[]={640,854,1280};
+    quality=std::max(0,std::min(quality,2));
+    int h=shortSide[quality],w=longSide[quality];
+    return format==FrameTall?FrameSize{h,w}:format==FrameSquare?FrameSize{h,h}:FrameSize{w,h};
+}
+int previewWidth(FrameFormat format) { return format==FrameTall?102:format==FrameSquare?ProxyH:ProxyW; }
+const wchar_t* formatName(FrameFormat format) { return format==FrameTall?L"9:16":format==FrameSquare?L"1:1":L"16:9"; }
 bool valid(const Project& p,bool media) {
     const Sequence& s=p.seq;
-    if(p.assets.size()>size_t(MaxAssets) || s.markers.size()>size_t(MaxMarkers) || !inRange(s.workIn,-1,MaxFrames-1) ||
+    if(s.format<FrameWide || s.format>=FrameFormats || p.assets.size()>size_t(MaxAssets) || s.markers.size()>size_t(MaxMarkers) || !inRange(s.workIn,-1,MaxFrames-1) ||
         !inRange(s.workOut,-1,MaxFrames) || s.workOut==0 || (s.workOut>=0 && s.workIn>=s.workOut)) return false;
     int mark=-1;
     for(const Marker& m:s.markers) {
@@ -303,6 +311,14 @@ PictureBox pictureBox(const Effects& e,int width,int height) {
     int w=std::max(2,(width*e.scale/100+1)&~1),h=std::max(2,(height*e.scale/100+1)&~1);
     PictureBox b={(width/2-w/2+width*e.x/200)&~1,(height/2-h/2+height*e.y/200)&~1,w,h};
     return b;
+}
+PictureBox outputBox(const Effects& fx,int width,int height,FrameFormat format) {
+    // The same 16:9 reference plane as the on-disk proxy. Narrow formats
+    // expose a center aperture without resampling or duplicating the proxy.
+    int reference=format==FrameWide?width:((height*16+9)/18)*2;
+    PictureBox box=pictureBox(fx,reference,height);
+    box.x-=((reference-width)/2)&~1;
+    return box;
 }
 static std::wstring digits(unsigned value, unsigned width) {
     wchar_t buf[16];

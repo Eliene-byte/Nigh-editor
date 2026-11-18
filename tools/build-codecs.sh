@@ -73,7 +73,7 @@ prefix="$work/prefix"
             --enable-parser=h264,hevc,mpeg4video,mpegvideo,aac,aac_latm,mpegaudio,ac3,flac,opus,vp8,vp9,h263,vc1,mjpeg,vorbis \
             --enable-decoder=h264,hevc,mpeg4,mpeg2video,mpeg1video,vp8,vp9,mjpeg,dvvideo,h263,wmv1,wmv2,wmv3,vc1,rawvideo,prores,vp6f,flv,aac,aac_latm,mp3,mp2,ac3,flac,vorbis,opus,pcm_s16le,pcm_s16be,pcm_s24le,pcm_s24be,pcm_s32le,pcm_s32be,pcm_u8,pcm_f32le,pcm_f32be,pcm_alaw,pcm_mulaw,adpcm_ima_wav,adpcm_ms,wmav1,wmav2,alac \
             --enable-encoder=libx264,aac,mjpeg,rawvideo,pcm_s16le \
-            --enable-filter=scale,pad,setsar,fps,tpad,format,aresample,aformat,apad,atrim,trim,anull,null,transpose,hflip,vflip,setpts,asetpts,color,rotate,overlay,blend,lutrgb,colorchannelmixer \
+            --enable-filter=scale,pad,setsar,fps,tpad,format,aresample,aformat,apad,atrim,trim,anull,null,transpose,hflip,vflip,setpts,asetpts,color,rotate,overlay,blend,lutrgb,colorchannelmixer,crop \
             --enable-bsf=aac_adtstoasc,h264_mp4toannexb,mpeg4_unpack_bframes
         printf '%s\n' "$key" > .nigh-config
     fi

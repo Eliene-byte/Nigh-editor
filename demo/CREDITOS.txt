@@ -1,0 +1,7 @@
+Maré baixa — demo original do Nigh Editor.
+
+Caderno de campo — demo técnica do Assistente Nigh. O filme combina uma
+imagem de retrato sintético com cenas de Maré baixa. A narração de teste
+foi sintetizada em português com meSpeak/eSpeak fora do editor; esse
+sintetizador não é instalado nem faz parte do ZIP. Não são imagens ou
+narrações da Adobe, nem uma entrevista de uma pessoa real.

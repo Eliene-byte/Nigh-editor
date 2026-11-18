@@ -32,8 +32,10 @@ jobs:
           mingw_path="$(bash tools/bootstrap-mingw.sh)"
           printf '%s\n' "$mingw_path" >> "$GITHUB_PATH"
 
-      - name: Testar o modelo de edição
-        run: make -j2 test
+      - name: Testar edição e modelos locais
+        run: |
+          make -j2 test
+          python3 tools/train-cuts.py --check
 
       - name: Compilar editor, codecs e teste de integração
         env:
@@ -96,7 +98,7 @@ jobs:
           name: teste-win32
           path: teste
 
-      - name: Testar edição, composição, formato legado e exportações
+      - name: Testar edição, modelos locais e exportações
         shell: pwsh
         env:
           PACKAGE_FILENAME: ${{ needs.build.outputs.filename }}
@@ -116,7 +118,8 @@ jobs:
           $specs = @(
             @{ File = 'Vídeo exportado.mp4'; Width = 640; Height = 360; Frames = 284 },
             @{ File = 'Vídeo 480p.mp4'; Width = 854; Height = 480; Frames = 284 },
-            @{ File = 'Composição HD.mp4'; Width = 1280; Height = 720; Frames = 24 }
+            @{ File = 'Composição HD.mp4'; Width = 1280; Height = 720; Frames = 24 },
+            @{ File = 'Vertical assistido.mp4'; Width = 360; Height = 640; Frames = 48 }
           )
           foreach ($spec in $specs) {
             $json = & $probe -v error -show_entries stream=codec_name,width,height,r_frame_rate,nb_frames,channels -of json -i (Join-Path $dest $spec.File)
@@ -138,13 +141,13 @@ jobs:
             throw 'O WAV não contém 1 segundo de PCM estéreo de 48 kHz'
           }
 
-      - name: Abrir o editor e testar propriedades, títulos e recuperação
+      - name: Abrir o editor e testar assistente, propriedades, títulos e recuperação
         id: interface
         shell: pwsh
         run: |
           $portable = (Resolve-Path 'extraido/Nigh Editor').Path
           $dest = (Resolve-Path 'saida').Path
-          $bmp = Join-Path $dest 'Nigh Editor 0.2.bmp'
+          $bmp = Join-Path $dest 'Nigh Editor.bmp'
           $png = Join-Path $dest 'Interface-Nigh-Editor.png'
           & './teste/gui-smoke.exe' (Join-Path $portable 'NighEditor.exe') $bmp `
             (Join-Path $dest 'Recuperação GUI.nigh') (Join-Path $portable 'demo/Dunas.mp4')
@@ -221,7 +224,7 @@ jobs:
           assets=("pacote/$PACKAGE_FILENAME" "pacote/$PACKAGE_FILENAME.sha256")
           if [[ -f captura/Interface-Nigh-Editor.png ]]; then
             assets+=(captura/Interface-Nigh-Editor.png)
-            printf '\n![Interface do Nigh Editor 0.2 com a demonstração Maré baixa](%s/%s/releases/download/%s/Interface-Nigh-Editor.png)\n' \
+            printf '\n![Assistente do Nigh Editor com monitores de fonte e programa](%s/%s/releases/download/%s/Interface-Nigh-Editor.png)\n' \
               "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$tag" >> "$notes"
           fi
           gh release create "$tag" "${assets[@]}" \

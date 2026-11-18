@@ -1,0 +1,2 @@
+- `face-320x180.gray`: 57.600 bytes de luminância de um retrato sintético (a mesma figura usada na demo Caderno). Exercita o Pico com um rosto frontal deslocado à direita; não é um conjunto de avaliação de precisão.
+- `speech-8k.raw`: PCM mono de 16 bits a 8 kHz com fala e silêncio. É `test-audio.raw` de [py-webrtcvad 2.0.10, commit `ba13cee`](https://github.com/wiseman/py-webrtcvad/tree/ba13ceea9dd3f3a068e869b2e94413205bd87f7d), com os avisos em [`src/vendor/vad/LICENSE`](../../src/vendor/vad/LICENSE).

@@ -13,8 +13,8 @@ struct MediaContext {
 };
 struct RenderPreset {
     int width,height,first,last;
-    bool audioOnly;
-    RenderPreset(int w=640,int h=360) : width(w),height(h),first(0),last(-1),audioOnly(false) {}
+    bool audioOnly,detailed;
+    RenderPreset(int w=640,int h=360) : width(w),height(h),first(0),last(-1),audioOnly(false),detailed(false) {}
 };
 bool codecsPresent(const std::wstring& tools);
 bool importMedia(const MediaContext& ctx,const std::wstring& path,Asset& asset,std::wstring& error);

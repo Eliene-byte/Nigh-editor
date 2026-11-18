@@ -395,11 +395,12 @@ static std::wstring decimal(int value) {
 struct ExportGraph {
     const Project& project;
     int width,height,frames,index;
+    bool detailed;
     StillCache& cache;
     Args args;
     std::wstring graph;
     ExportGraph(const Project& p,RenderPreset preset,int n,StillCache& c) :
-        project(p),width(preset.width),height(preset.height),frames(n),index(0),cache(c),args(ff()),
+        project(p),width(preset.width),height(preset.height),frames(n),index(0),detailed(preset.detailed),cache(c),args(ff()),
         graph(L"sws_flags=bilinear+accurate_rnd+bitexact;") {}
     std::wstring period() const { return L"trim=end_frame="+number(frames); }
     void black(const std::wstring& tag) {
@@ -413,9 +414,9 @@ struct ExportGraph {
         if(!clip || clip->fx.opacity==0) { if(base.empty()) black(tag); return !clip || base.empty(); }
         const Asset& a=project.assets[clip->asset];
         const Effects& fx=clip->fx;
-        PictureBox b=pictureBox(fx,width,height);
-        bool full=b.x==0 && b.y==0 && b.w==width && b.h==height;
-        bool composition=!base.empty() || !full || a.still || fx.opacity!=100;
+        PictureBox b=outputBox(fx,width,height,project.seq.format);
+        bool covers=b.x<=0 && b.y<=0 && b.x+b.w>=width && b.y+b.h>=height;
+        bool composition=!base.empty() || !covers || a.still || fx.opacity!=100;
         int input=index++, skip=0;
         if(a.still) {
             const StillInput* still=cache.get(project,clip->asset,error);
@@ -448,6 +449,8 @@ struct ExportGraph {
                 graph+=L",lutrgb=r="+lut+L":g="+lut+L":b="+lut;
             }
         }
+        if(!composition && (b.w!=width || b.h!=height))
+            graph+=L",crop="+number(width)+L":"+number(height)+L":"+number(-b.x)+L":"+number(-b.y);
         graph+=(composition?L",format=yuva420p[":L",format=yuv420p[")+label+L"];";
         if(composition) {
             std::wstring background=base;
@@ -468,7 +471,7 @@ struct ExportGraph {
     void output(const std::wstring& label,const std::wstring& dest) {
         graph.pop_back();
         append(args,{L"-filter_complex",graph,L"-map",L"["+label+L"]",L"-an",L"-frames:v",number(frames),
-            L"-c:v",L"libx264",L"-preset",L"ultrafast",L"-profile:v",L"baseline",L"-crf",L"21",
+            L"-c:v",L"libx264",L"-preset",detailed?L"veryfast":L"ultrafast",L"-profile:v",L"baseline",L"-crf",detailed?L"17":L"21",
             L"-g",L"48",L"-pix_fmt",L"yuv420p",L"-threads",L"1",L"-map_metadata",L"-1",L"-f",L"mp4",dest});
     }
 };
@@ -563,8 +566,14 @@ bool render(const MediaContext& ctx,const Project& p,const std::wstring& target,
     if(!valid(p,true)) { error=L"A sequência contém uma referência de mídia ou edição inválida."; return false; }
     int total=length(p.seq), first=preset.first, end=preset.last<0?total:preset.last;
     if(first<0 || end>total || first>=end) { error=L"Sequência vazia ou intervalo de exportação inválido."; return false; }
-    if(!preset.audioOnly && !((preset.width==640 && preset.height==360) || (preset.width==854 && preset.height==480) ||
-            (preset.width==1280 && preset.height==720))) { error=L"Resolução de exportação não suportada."; return false; }
+    if(!preset.audioOnly) {
+        bool supported=false;
+        for(int quality=0;quality<3;++quality) {
+            FrameSize size=outputSize(p.seq.format,quality);
+            supported=supported || (preset.width==size.w && preset.height==size.h);
+        }
+        if(!supported) { error=L"Resolução incompatível com o formato da sequência."; return false; }
+    }
     for(const Asset& a:p.assets) if(equalPath(a.path,target)) { error=L"Escolha um nome diferente do arquivo original."; return false; }
     if(!p.file.empty() && equalPath(p.file,target)) { error=L"A exportação não pode substituir o projeto."; return false; }
     TempDir temp(ctx.scratch);
@@ -578,7 +587,7 @@ bool render(const MediaContext& ctx,const Project& p,const std::wstring& target,
     if(!preset.audioOnly) append(args,{L"-f",L"concat",L"-safe",L"1",L"-i",list});
     append(args,{L"-f",L"s16le",L"-ar",number(RenderRate),L"-ac",L"2",L"-i",mix});
     if(preset.audioOnly) append(args,{L"-c:a",L"copy",L"-f",L"wav",out.path});
-    else append(args,{L"-map",L"0:v:0",L"-map",L"1:a:0",L"-c:v",L"copy",L"-c:a",L"aac",L"-b:a",L"128k",
+    else append(args,{L"-map",L"0:v:0",L"-map",L"1:a:0",L"-c:v",L"copy",L"-c:a",L"aac",L"-b:a",preset.detailed?L"160k":L"128k",
         L"-movflags",L"+faststart",L"-f",L"mp4",out.path});
     if(!run(ctx,L"ffmpeg.exe",args,log,error) || ctx.stopped()) return false;
     if(!MoveFileExW(out.path.c_str(),target.c_str(),MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH)) {

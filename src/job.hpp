@@ -1,8 +1,8 @@
 #pragma once
-#include "media.hpp"
+#include "assist.hpp"
 
 namespace nigh {
-enum JobKind { ImportJob, OpenJob, DemoJob, ExportJob };
+enum JobKind { ImportJob, OpenJob, DemoJob, ExportJob, AssistJob, AssistDemoJob };
 struct JobProgress {
     int percent;
     std::wstring label;
@@ -21,6 +21,8 @@ public:
     std::wstring target,error;
     Project project;
     RenderPreset preset;
+    AssistTarget request;
+    AssistReport analysis;
     bool success, openedWithChanges;
     int rejected;
     Job(JobKind k,const std::wstring& tools,const std::wstring& scratch);

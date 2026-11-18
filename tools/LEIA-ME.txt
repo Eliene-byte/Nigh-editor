@@ -1,35 +1,47 @@
-NIGH EDITOR 0.2.0  |  Windows de 32 bits
+NIGH EDITOR 0.3.0  |  Windows de 32 bits
 
-1. Extraia todo o ZIP e abra NighEditor.exe. Mantenha o ffmpeg.exe e o
-   ffprobe.exe ao lado dele. Não precisa instalar nem criar conta.
-2. Clique em Abrir demo para ver Maré baixa, ou em Importar para começar.
+1. Extraia todo o ZIP e abra NighEditor.exe. Mantenha ffmpeg.exe,
+   ffprobe.exe e a pasta models ao lado dele. Não é necessário instalar
+   o programa, criar conta, usar uma GPU dedicada ou acessar a Internet.
+2. Clique em Abrir demo para explorar Maré baixa, ou em Importar para
+   começar. Em Assistente > Abrir demo de IA, explore Caderno de campo.
 3. Use I e O no monitor de fonte para escolher um trecho. Arraste-o da
    biblioteca para V1 (montagem), V2 (sobreposição), A2 ou A3 (áudio).
 
-NA LINHA DO TEMPO
+ASSISTENTE LOCAL
+- Selecione um clipe, ou ative o monitor de fonte. F4 analisa até 90 s
+  de mídia a partir da entrada. O trabalho sobre os proxies é cancelável.
+- F5 abre Revisar sugestões. F6 e Shift+F6 percorrem cortes e falas.
+  Você pode marcar, dividir o clipe, ou usar uma fala como In/Out da fonte.
+- F7 propõe escala e posição em V1 usando um rosto frontal detectado.
+  É um reenquadramento estático, não acompanha movimentos. Pressione
+  F2 para editar e Ctrl+Z para desfazer. Nada muda sem sua ação.
+- A análise de fala indica intervalos prováveis, sem transcrever palavras.
+
+MONTAGEM E SAÍDA
+- Clique no monitor de fonte ou programa para ativá-lo. Em tela estreita
+  use o botão Fonte/Programa. Espaço reproduz; setas avançam um quadro.
 - V1 fecha lacunas ao remover clipes. A1 acompanha V1; V2 só traz imagem.
-- Arraste o centro do clipe para mover e as bordas para aparar.
-- F2 ou duplo clique: propriedades. Em vídeo, ajuste imagem, escala,
-  opacidade e a dissolução na entrada de um clipe em V1. Em áudio, ajuste
-  volume, pan estéreo e fades. T adiciona títulos ou legendas manuais.
-- Espaço reproduz; setas avançam um quadro; C divide; Delete remove.
-  M cria marcador; Page Up/Down navega entre eles. Ferramentas e F1
-  mostram mais atalhos.
-- Alt+I/Alt+O marca o intervalo de saída. Exporte MP4 (360p, 480p ou
-  720p) ou WAV estéreo. Prefira 360p/480p no hardware mais antigo.
+- Arraste o centro do clipe para mover e as bordas para aparar. F2 abre
+  propriedades com imagem, posição, cor e áudio. T cria título/legenda
+  manual. C divide; Delete remove; M cria marcador. F1 abre os atalhos.
+- Escolha 16:9, 1:1 ou 9:16 no programa. Alt+I/Alt+O define o intervalo
+  de exportação. O MP4 usa os originais, com lado curto de 360, 480 ou
+  720 px. Qualidade detalhada leva mais tempo. WAV exporta só o áudio.
 
 PROJETOS
-Salve .nigh e mantenha seus originais. Se um original mudar de pasta,
-o editor pode pedir para relocalizá-lo. Depois do primeiro salvamento,
-o editor tenta manter uma cópia .nigh.recuperacao junto do projeto.
-Abra o .nigh original para recuperar após uma interrupção. A v0.2 lê
-projetos da v0.1. Use Salvar como para preservar uma cópia antiga.
+Salve .nigh e mantenha seus originais. Se algum mudar de pasta, o editor
+pode pedir para religá-lo. Depois do primeiro salvamento, o editor tenta
+manter uma cópia .nigh.recuperacao. Abra o .nigh original para recuperar
+uma interrupção. A v0.3 lê versões 0.1/0.2; use Salvar como para preservar
+uma cópia se precisar abri-la com a versão antiga.
 
 HARDWARE
-Alvo: Windows XP SP3/x86 com SSE2 (como Pentium M); recomendados 1 GB
-RAM, tela 1024 x 600 e disco livre para a prévia e a exportação. A
-prévia usa proxies 320 x 180 a 12 qps. Os testes em Windows atual não
-substituem uma validação num notebook físico de 2005.
+Alvo: XP SP3 de 32 bits e SSE2 (Pentium M); recomendados 1 GB de RAM,
+tela 1024 x 600 e disco livre para a prévia e a exportação. F8 ativa o
+modo Eco: um monitor e prévia de 6 qps durante a reprodução, em vez de
+12 qps. A saída continua a 24 qps. Os testes em Windows atual não são
+uma validação num notebook físico de 2005.
 
 Licenças e fontes dos codecs: subpasta Licencas.
 Releases: https://github.com/Eliene-byte/Nigh-editor/releases

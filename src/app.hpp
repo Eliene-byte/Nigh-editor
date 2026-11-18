@@ -12,7 +12,10 @@ enum Command { CmdNone, CmdFile, CmdNew, CmdOpen, CmdSave, CmdSaveAs, CmdImport,
     CmdPrev, CmdNext, CmdZoomOut, CmdFit, CmdZoomIn, CmdMute1, CmdMute2, CmdGainDown, CmdGainUp, CmdCancel,
     CmdVideoMode, CmdTools, CmdProps, CmdTitle, CmdMute3, CmdHideOverlay, CmdInsert, CmdAddOverlay, CmdAddMusic, CmdAddVoice,
     CmdCopy, CmdPaste, CmdDuplicate, CmdMarker, CmdMarkPrev, CmdMarkNext, CmdWorkIn, CmdWorkOut, CmdWorkClear,
-    CmdSourceClear, CmdExport720, CmdExportWav, CmdUseRange, CmdAssetBase=1000 };
+    CmdSourceClear, CmdExport720, CmdExportWav, CmdUseRange, CmdWorkspaceEdit, CmdWorkspaceAssist, CmdEco,
+    CmdFormat, CmdFormatWide, CmdFormatSquare, CmdFormatTall, CmdSourceMode, CmdPlaySource, CmdPlayProgram,
+    CmdAnalyze, CmdAssistDemo, CmdAiReview, CmdAiNext, CmdAiPrevious, CmdAiMarkers, CmdAiSplit, CmdAiFace,
+    CmdAiVoice, CmdAiTune, CmdQuality, CmdAssetBase=1000 };
 struct Hit {
     int command;
     RECT area;
@@ -35,9 +38,9 @@ struct SourceRange {
 };
 struct Layout {
     int w,h,labelW, rows;
-    bool side;
-    RECT media, mediaList, viewer, display, transportSeek, inspector, gain, timeline, ruler, lanes[RowCount], scroll, status;
-    Layout() : w(0),h(0),labelW(0),rows(0),side(false),media(),mediaList(),viewer(),display(),transportSeek(),inspector(),gain(),timeline(),ruler(),lanes(),scroll(),status() {}
+    bool side, dual;
+    RECT media, mediaList, viewer, display, transportSeek, sourcePanel, sourceDisplay, sourceSeek, inspector, gain, timeline, ruler, lanes[RowCount], scroll, status;
+    Layout() : w(0),h(0),labelW(0),rows(0),side(false),dual(false),media(),mediaList(),viewer(),display(),transportSeek(),sourcePanel(),sourceDisplay(),sourceSeek(),inspector(),gain(),timeline(),ruler(),lanes(),scroll(),status() {}
 };
 enum Grab { Idle, Scrub, MonitorSeek, PoolItem, MoveClip, LeftEdge, RightEdge, Scrollbar, AdjustGain };
 struct Drag {
@@ -55,10 +58,10 @@ class App {
     std::unique_ptr<Job> job_;
     JobProgress progress_;
     Player player_;
-    Preview preview_;
-    int cachedFrame_,cachedSource_;
+    Preview preview_,rawPreview_;
+    int cachedFrame_,rawFrame_,rawAsset_;
     SourceRange sourceRanges_[MaxAssets];
-    std::vector<uint8_t> pixels_;
+    std::vector<uint8_t> pixels_,rawPixels_;
     Fonts fonts_;
     HDC back_;
     HBITMAP bmp_;
@@ -71,8 +74,11 @@ class App {
     Clip clipboard_;
     Lane copiedLane_;
     Drag drag_;
+    AssistTarget analyzed_;
+    AssistReport report_;
+    int reviewIndex_;
     int asset_,source_,sourceHead_,head_,zoom_,first_,assetScroll_,mouseX_,mouseY_,focus_;
-    bool dirty_,demo_,mouseIn_,closeWhenDone_,changingCapture_,hasClipboard_,useRange_,snapshotPending_,recovered_;
+    bool dirty_,demo_,mouseIn_,closeWhenDone_,changingCapture_,hasClipboard_,useRange_,snapshotPending_,recovered_,assistMode_,eco_,hasReport_,quality_;
     std::wstring status_;
 
     void redraw(bool all=true);
@@ -80,6 +86,7 @@ class App {
     void invalidateFrame();
     void layout(int w,int h);
     bool canDemo() const;
+    bool canAssistDemo() const;
     void paint();
     void paintContent(HDC dc,RECT client,RECT dirty);
     void button(Canvas& c,int id,RECT r,const std::wstring& text,Glyph g,bool enabled=true,int style=0);
@@ -88,6 +95,8 @@ class App {
     void drawHeader(Canvas& c);
     void drawMedia(Canvas& c);
     void drawViewer(Canvas& c);
+    void drawMonitor(Canvas& c,bool source,bool paired);
+    void drawAssistant(Canvas& c);
     void drawInspector(Canvas& c);
     void drawTimeline(Canvas& c);
     void drawStatus(Canvas& c);
@@ -127,7 +136,14 @@ class App {
     bool save(bool as);
     bool confirmDiscard();
     void openProject(const std::wstring& path=L"");
-    void showDemo();
+    void showDemo(bool assistant=false);
+    void workspace(bool assistant);
+    AssistTarget targetForAnalysis() const;
+    void startAnalysis();
+    void actOnReport(int id);
+    void focusMonitor(bool source);
+    void useFormat(FrameFormat format);
+    void exportQuality(int quality);
     void importFiles(std::vector<std::wstring> paths);
     void exportTo(RenderPreset preset);
     bool startJob(std::unique_ptr<Job> job);

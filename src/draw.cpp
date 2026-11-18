@@ -97,6 +97,7 @@ void Canvas::icon(Glyph g,int x,int y,unsigned col,int size) {
         SelectObject(dc_,pen); SelectObject(dc_,brush);
     };
     switch(g) {
+    case Spark: p({{8,1},{10,6},{15,8},{10,10},{8,15},{6,10},{1,8},{6,6}});break;
     case Logo: p({{1,2},{4,2},{11,9},{11,3},{15,1},{15,14},{12,14},{5,7},{5,13},{1,15}}); break;
     case Folder: l(1,5,6,5);l(6,5,8,7);l(8,7,15,7);l(15,7,15,14);l(15,14,1,14);l(1,14,1,5);break;
     case Disk: r(2,2,14,14);r(5,2,11,6);r(5,9,11,14);break;
