@@ -83,6 +83,8 @@ jobs:
     needs: build
     runs-on: windows-2022
     timeout-minutes: 12
+    outputs:
+      screenshot: ${{ steps.interface.outputs.screenshot }}
     steps:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
@@ -137,6 +139,7 @@ jobs:
           }
 
       - name: Abrir o editor e testar propriedades, títulos e recuperação
+        id: interface
         shell: pwsh
         run: |
           $portable = (Resolve-Path 'extraido/Nigh Editor').Path
@@ -153,13 +156,15 @@ jobs:
               try { $frame.Save($png, [System.Drawing.Imaging.ImageFormat]::Png) } finally { $frame.Dispose() }
             } catch { Write-Warning "Não foi possível converter a captura: $_" }
           }
+          if (Test-Path -LiteralPath $png) { 'screenshot=true' >> $env:GITHUB_OUTPUT }
 
       - name: Guardar captura da demonstração
+        if: steps.interface.outputs.screenshot == 'true'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: interface-nigh-editor
           path: saida/Interface-Nigh-Editor.png
-          if-no-files-found: ignore
+          if-no-files-found: error
           retention-days: 14
           overwrite: true
 
@@ -186,6 +191,12 @@ jobs:
           name: nigh-editor-windows-x86
           path: pacote
 
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: needs.windows-smoke.outputs.screenshot == 'true'
+        with:
+          name: interface-nigh-editor
+          path: captura
+
       - name: Publicar os arquivos compilados nesta execução
         env:
           GH_TOKEN: ${{ github.token }}
@@ -207,5 +218,11 @@ jobs:
           cat .github/release-notes.md > "$notes"
           printf '\n[Compilação e testes no GitHub Actions](%s/%s/actions/runs/%s).\n' \
             "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" >> "$notes"
-          gh release create "$tag" "pacote/$PACKAGE_FILENAME" "pacote/$PACKAGE_FILENAME.sha256" \
+          assets=("pacote/$PACKAGE_FILENAME" "pacote/$PACKAGE_FILENAME.sha256")
+          if [[ -f captura/Interface-Nigh-Editor.png ]]; then
+            assets+=(captura/Interface-Nigh-Editor.png)
+            printf '\n![Interface do Nigh Editor 0.2 com a demonstração Maré baixa](%s/%s/releases/download/%s/Interface-Nigh-Editor.png)\n' \
+              "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$tag" >> "$notes"
+          fi
+          gh release create "$tag" "${assets[@]}" \
             --target "$GITHUB_SHA" --title "Nigh Editor $VERSION — Windows x86" --latest --notes-file "$notes"

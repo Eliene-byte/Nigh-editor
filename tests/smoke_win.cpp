@@ -180,7 +180,7 @@ extern "C" int wmain(int argc,wchar_t** argv) {
     Project reopened;
     if(!saveProject(p,project) || !readProject(project,reopened,why) || !(p.seq==reopened.seq) ||
         p.assets.size()!=reopened.assets.size() || !equalPath(reopened.assets[0].path,p.assets[0].path)) return fail(L"Salvar e reabrir projeto");
-    // Real stereo/mono data is read and muted according to the active tracks.
+    // Real stereo data is read and muted according to the active tracks.
     {
         Mixer mixer;
         int16_t samples[1024*2];

@@ -378,7 +378,8 @@ public:
     const StillInput* get(const Project& p,int key,std::wstring& error) {
         for(int i=0;i<3;++i) if(keys_[i]==key) { used_[i]=true; return &slots_[i]; }
         int use=next_;
-        while(used_[use]) use=(use+1)%3;
+        for(int i=0;i<3 && used_[use];++i) use=(use+1)%3;
+        if(used_[use]) { error=L"Não foi possível preparar as imagens deste segmento."; return 0; }
         used_[use]=true;
         next_=(use+1)%3;
         keys_[use]=-1;
@@ -559,8 +560,9 @@ static bool prepareMix(const MediaContext& ctx,const Project& p,int first,int en
 }
 bool render(const MediaContext& ctx,const Project& p,const std::wstring& target,RenderPreset preset,std::wstring& error) {
     if(ctx.stopped()) return false;
+    if(!valid(p,true)) { error=L"A sequência contém uma referência de mídia ou edição inválida."; return false; }
     int total=length(p.seq), first=preset.first, end=preset.last<0?total:preset.last;
-    if(!valid(p,true) || first<0 || end>total || first>=end) { error=L"Sequência vazia ou intervalo de exportação inválido."; return false; }
+    if(first<0 || end>total || first>=end) { error=L"Sequência vazia ou intervalo de exportação inválido."; return false; }
     if(!preset.audioOnly && !((preset.width==640 && preset.height==360) || (preset.width==854 && preset.height==480) ||
             (preset.width==1280 && preset.height==720))) { error=L"Resolução de exportação não suportada."; return false; }
     for(const Asset& a:p.assets) if(equalPath(a.path,target)) { error=L"Escolha um nome diferente do arquivo original."; return false; }
