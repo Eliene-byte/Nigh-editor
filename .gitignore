@@ -1,0 +1,7 @@
+.cache/
+build/
+dist/
+*.nigh
+*.nigh-part-*
+/artifacts/*.zip
+/artifacts/*.zip.sha256

@@ -1,0 +1,34 @@
+NIGH EDITOR 0.1.0    /    WINDOWS x86 PORTÁTIL
+
+COMECE AQUI
+
+1. Extraia a pasta “Nigh Editor” inteira do ZIP.
+2. Dentro dela, abra NighEditor.exe. Deixe ffmpeg.exe e ffprobe.exe ao lado dele.
+3. Clique em Abrir demo, ou em Importar para usar seus próprios arquivos.
+4. Use +, duplo clique ou arraste um item para adicioná-lo à linha do tempo.
+5. Salve o projeto com Ctrl+S. Para um arquivo de vídeo, use Exportar MP4.
+
+EDIÇÃO
+
+• V1: clipes de vídeo consecutivos; A1: áudio original vinculado; A2: trilha à parte.
+• Clique na régua para posicionar o cursor. Espaço reproduz ou pausa; ← e → avançam por quadro.
+• C divide o clipe selecionado no cursor. I e O aparam a entrada ou saída.
+• Arraste a borda para aparar e o centro para mover. Delete remove.
+• No inspetor, ajuste o volume do clipe; Alt+↑/↓ também funciona.
+• Ctrl+Z/Y desfaz/refaz; Ctrl+roda muda o zoom; F1 abre a ajuda.
+
+PARA NOTEBOOKS ANTIGOS
+
+Windows de 32 bits, alvo Windows XP SP3. Processador com SSE2 (por exemplo,
+Pentium M), tela recomendada de 1024 × 600 ou maior e 1 GB de RAM recomendados.
+Não requer conta, internet, .NET ou GPU dedicada. É um alvo de projeto; não houve teste
+em hardware de 2005. A prévia é feita a 320 × 180 / 12 quadros por segundo.
+A saída MP4 (H.264 + AAC) usa os originais a 24 qps, em 360p ou 480p.
+
+Os projetos .nigh referenciam os arquivos originais; não os mova ou apague.
+A pasta TEMP guarda as prévias até fechar o editor. Deixe espaço livre; importação
+e exportação levam mais tempo para vídeos grandes ou codecs pesados. Limite de 2 h
+por mídia e sequência. Use mídias de origem confiável, sobretudo em Windows XP.
+
+Licenças, avisos e código-fonte correspondente dos codecs ficam em Licencas.
+Nigh Editor é independente e não faz parte do Adobe Premiere Pro.

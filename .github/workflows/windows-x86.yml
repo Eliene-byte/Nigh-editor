@@ -1,0 +1,174 @@
+name: Compilar Nigh Editor para Windows x86
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      publicar:
+        description: Publicar o pacote testado em GitHub Releases
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Compilar e empacotar (Windows x86)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    outputs:
+      filename: ${{ steps.pacote.outputs.filename }}
+      version: ${{ steps.pacote.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Preparar o compilador i686/MSVCRT
+        run: |
+          mingw_path="$(bash tools/bootstrap-mingw.sh)"
+          printf '%s\n' "$mingw_path" >> "$GITHUB_PATH"
+
+      - name: Testar o modelo de edição
+        run: make -j2 test
+
+      - name: Compilar editor, codecs e teste de integração
+        env:
+          JOBS: 2
+        run: make -j2 package smoke
+
+      - name: Verificar o pacote portátil
+        id: pacote
+        run: |
+          cd artifacts
+          shopt -s nullglob
+          packages=(Nigh-Editor-*-Windows-x86.zip)
+          [[ ${#packages[@]} -eq 1 ]]
+          filename="${packages[0]}"
+          version="${filename#Nigh-Editor-}"
+          version="${version%-Windows-x86.zip}"
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          sha256sum -c "$filename.sha256"
+          unzip -tq "$filename"
+          printf 'filename=%s\nversion=%s\n' "$filename" "$version" >> "$GITHUB_OUTPUT"
+
+      - name: Guardar o pacote portátil
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: nigh-editor-windows-x86
+          path: |
+            artifacts/${{ steps.pacote.outputs.filename }}
+            artifacts/${{ steps.pacote.outputs.filename }}.sha256
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+          overwrite: true
+
+      - name: Guardar o teste Win32
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: teste-win32
+          path: build/smoke.exe
+          if-no-files-found: error
+          retention-days: 14
+          overwrite: true
+
+  windows-smoke:
+    name: Testar o pacote no Windows
+    needs: build
+    runs-on: windows-2022
+    timeout-minutes: 12
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: nigh-editor-windows-x86
+          path: pacote
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: teste-win32
+          path: teste
+
+      - name: Importar, editar, salvar e exportar MP4 usando o pacote
+        shell: pwsh
+        env:
+          PACKAGE_FILENAME: ${{ needs.build.outputs.filename }}
+        run: |
+          $archive = Join-Path 'pacote' $env:PACKAGE_FILENAME
+          $expected = ((Get-Content "$archive.sha256" -Raw) -split '\s+')[0]
+          if ((Get-FileHash $archive -Algorithm SHA256).Hash -ne $expected) { throw 'SHA-256 incorreto' }
+          Expand-Archive -LiteralPath $archive -DestinationPath 'extraido'
+          $portable = (Resolve-Path 'extraido/Nigh Editor').Path
+          $demo = Join-Path $portable 'demo'
+          $dest = (New-Item -ItemType Directory 'saida').FullName
+          if (-not (Test-Path (Join-Path $portable 'NighEditor.exe'))) { throw 'Executável não encontrado' }
+          & './teste/smoke.exe' $portable $demo $dest
+          if ($LASTEXITCODE -ne 0) { throw "Falha no teste Win32: $LASTEXITCODE" }
+
+          $probe = Join-Path $portable 'ffprobe.exe'
+          $specs = @(
+            @{ File = 'Vídeo exportado.mp4'; Width = 640; Height = 360 },
+            @{ File = 'Vídeo 480p.mp4'; Width = 854; Height = 480 }
+          )
+          foreach ($spec in $specs) {
+            $json = & $probe -v error -show_entries stream=codec_name,width,height,r_frame_rate,nb_frames,channels -of json -i (Join-Path $dest $spec.File)
+            if ($LASTEXITCODE -ne 0) { throw "ffprobe falhou para $($spec.File)" }
+            $streams = ($json -join "`n" | ConvertFrom-Json).streams
+            $video = $streams | Where-Object codec_name -eq 'h264'
+            $audio = $streams | Where-Object codec_name -eq 'aac'
+            if ($video.width -ne $spec.Width -or $video.height -ne $spec.Height -or
+                $video.r_frame_rate -ne '24/1' -or $video.nb_frames -ne '284' -or $audio.channels -ne 2) {
+              throw "Exportação inesperada: $($spec.File)"
+            }
+            Write-Host "Validado: $($spec.File) — $($video.width)x$($video.height), H.264 + AAC estéreo"
+          }
+
+  release:
+    name: Publicar em GitHub Releases
+    needs: [build, windows-smoke]
+    if: >-
+      (github.event_name == 'push' && startsWith(github.event.head_commit.message, 'release: v')) ||
+      (github.event_name == 'workflow_dispatch' && inputs.publicar)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    concurrency:
+      group: nigh-release-${{ needs.build.outputs.version }}
+      cancel-in-progress: false
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: nigh-editor-windows-x86
+          path: pacote
+
+      - name: Publicar os arquivos compilados nesta execução
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          HEAD_MESSAGE: ${{ github.event.head_commit.message }}
+          PACKAGE_FILENAME: ${{ needs.build.outputs.filename }}
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          tag="v$VERSION"
+          if [[ "$GITHUB_EVENT_NAME" == push && "${HEAD_MESSAGE%%$'\n'*}" != "release: $tag" ]]; then
+            echo "Para publicar, use release: $tag na primeira linha do commit." >&2
+            exit 1
+          fi
+          if tagged_sha=$(gh api "repos/$GH_REPO/commits/$tag" --jq .sha 2>/dev/null); then
+            [[ "$tagged_sha" == "$GITHUB_SHA" ]] || { echo "$tag aponta para outro commit." >&2; exit 1; }
+          fi
+          (cd pacote && sha256sum -c "$PACKAGE_FILENAME.sha256")
+          notes="$RUNNER_TEMP/release-notes.md"
+          cat .github/release-notes.md > "$notes"
+          printf '\n[Compilação e testes no GitHub Actions](%s/%s/actions/runs/%s).\n' \
+            "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" >> "$notes"
+          gh release create "$tag" "pacote/$PACKAGE_FILENAME" "pacote/$PACKAGE_FILENAME.sha256" \
+            --target "$GITHUB_SHA" --title "Nigh Editor $VERSION — Windows x86" --latest --notes-file "$notes"
